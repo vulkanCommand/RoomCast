@@ -74,6 +74,7 @@ export function AppHeader() {
             )}
           </nav>
           <div className="flex items-center gap-2">
+            <SupportButton />
             {isAuthed ? (
               <>
                 <Button asChild size="sm" className="hidden bg-gradient-primary text-primary-foreground sm:inline-flex">
