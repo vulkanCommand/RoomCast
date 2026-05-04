@@ -1,10 +1,56 @@
 import { Link, NavLink, useLocation } from "react-router-dom";
-import { LogOut, Plus } from "lucide-react";
+import { LifeBuoy, LogOut, Mail, Plus } from "lucide-react";
 import { BrandLogo } from "./BrandLogo";
 import { useAuthStore } from "@/store/auth";
 import { AvatarOrb } from "./AvatarOrb";
 import { Button } from "./ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "./ui/dialog";
 import { cn } from "@/lib/utils";
+
+const SUPPORT_EMAIL = "gdkalyan2109@gmail.com";
+
+function SupportButton() {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" className="gap-1.5" aria-label="Contact support">
+          <LifeBuoy className="h-4 w-4" />
+          <span className="hidden sm:inline">Support</span>
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="font-display">Contact the developer</DialogTitle>
+          <DialogDescription>
+            Need help, found a bug, or have feedback about RoomCast? Reach out directly.
+          </DialogDescription>
+        </DialogHeader>
+        <a
+          href={`mailto:${SUPPORT_EMAIL}?subject=RoomCast%20Support`}
+          className="mt-2 flex items-center gap-3 rounded-xl border border-border/70 bg-card/50 p-4 transition-colors hover:border-primary/50 hover:bg-card"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-primary text-primary-foreground">
+            <Mail className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Email</div>
+            <div className="truncate font-mono text-sm font-medium">{SUPPORT_EMAIL}</div>
+          </div>
+        </a>
+        <p className="text-xs text-muted-foreground">
+          We typically respond within 1–2 business days.
+        </p>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export function AppHeader() {
   const { user, isAuthed, logout } = useAuthStore();
@@ -28,6 +74,7 @@ export function AppHeader() {
             )}
           </nav>
           <div className="flex items-center gap-2">
+            <SupportButton />
             {isAuthed ? (
               <>
                 <Button asChild size="sm" className="hidden bg-gradient-primary text-primary-foreground sm:inline-flex">
