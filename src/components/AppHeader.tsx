@@ -45,7 +45,7 @@ function SupportButton() {
           </div>
         </a>
         <p className="text-xs text-muted-foreground">
-          We typically respond within 1–2 business days.
+          We typically respond within 1-2 business days.
         </p>
       </DialogContent>
     </Dialog>
