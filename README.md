@@ -2,6 +2,10 @@
 
 RoomCast is a private two-person watch room built for simple, low-friction screen sharing. A host creates a room, invites one guest with a short code, and streams their screen directly through WebRTC for a shared viewing experience.
 
+![RoomCast hero](docs/images/roomcast-hero.png)
+
+![RoomCast features](docs/images/roomcast-features.png)
+
 ## Features
 
 - Google sign-in for quick, familiar access
