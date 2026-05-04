@@ -7,7 +7,7 @@ import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 
 export function AppHeader() {
-  const { user, isAuthed, signOut } = useAuthStore();
+  const { user, isAuthed, logout } = useAuthStore();
   const loc = useLocation();
   const inRoom = loc.pathname.startsWith("/room/");
   if (inRoom) return null;
@@ -36,7 +36,7 @@ export function AppHeader() {
                   </Link>
                 </Button>
                 {user && <AvatarOrb initials={user.initials} hue={user.avatarColor} size="sm" />}
-                <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out">
+                <Button variant="ghost" size="icon" onClick={() => void logout()} aria-label="Sign out">
                   <LogOut className="h-4 w-4" />
                 </Button>
               </>

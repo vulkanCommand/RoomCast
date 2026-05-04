@@ -8,14 +8,9 @@ import { toast } from "sonner";
 
 export default function Join() {
   const nav = useNavigate();
-  const { user, isAuthed } = useAuthStore();
+  const { user } = useAuthStore();
   const { joinRoomByCode } = useRoomStore();
   const [code, setCode] = useState<string[]>(Array(6).fill(""));
-
-  if (!isAuthed) {
-    nav("/login");
-    return null;
-  }
 
   const setChar = (i: number, v: string) => {
     const ch = v.replace(/[^a-zA-Z0-9]/g, "").toUpperCase().slice(0, 1);
@@ -37,7 +32,7 @@ export default function Join() {
     setCode(next);
   };
 
-  const submit = (e?: React.FormEvent) => {
+  const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const full = code.join("");
     if (full.length !== 6) {
@@ -45,10 +40,13 @@ export default function Join() {
       return;
     }
     if (!user) return;
-    const room = joinRoomByCode(full, user);
-    if (room) {
+    try {
+      const room = await joinRoomByCode(full, user);
+      if (!room) return;
       toast.success(`Joining ${room.name}`);
       nav(`/room/${room.id}`);
+    } catch {
+      toast.error("Could not join that room.");
     }
   };
 

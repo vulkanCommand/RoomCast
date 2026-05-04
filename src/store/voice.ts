@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import * as webrtcService from "@/services/webrtcService";
 
 interface VoiceState {
   // local mic state
@@ -20,9 +21,20 @@ export const useVoiceStore = create<VoiceState>((set) => ({
   isTalking: false,
   shareVolume: 1,
   speakingUserIds: [],
-  setMicEnabled: (v) => set({ micEnabled: v }),
-  startTalking: () => set({ isTalking: true, shareVolume: 0.25 }),
-  stopTalking: () => set({ isTalking: false, shareVolume: 1 }),
+  setMicEnabled: (v) => {
+    webrtcService.setMicEnabled(v);
+    set({ micEnabled: v });
+  },
+  startTalking: () => {
+    webrtcService.setMicEnabled(true);
+    webrtcService.sendSpeaking(true);
+    set({ micEnabled: true, isTalking: true, shareVolume: 0.25 });
+  },
+  stopTalking: () => {
+    webrtcService.setMicEnabled(false);
+    webrtcService.sendSpeaking(false);
+    set({ micEnabled: false, isTalking: false, shareVolume: 1 });
+  },
   setShareVolume: (v) => set({ shareVolume: v }),
   setSpeakingUsers: (ids) => set({ speakingUserIds: ids }),
 }));

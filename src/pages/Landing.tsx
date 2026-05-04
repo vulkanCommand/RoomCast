@@ -66,7 +66,7 @@ export default function Landing() {
                       <MonitorPlay className="h-10 w-10 text-primary-foreground" />
                     </div>
                     <p className="font-display text-xl">Ava is sharing her screen</p>
-                    <p className="text-sm text-muted-foreground">3 watching · voice channel open</p>
+                    <p className="text-sm text-muted-foreground">Host and guest � voice channel open</p>
                   </div>
                 </div>
                 <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between">
@@ -117,8 +117,8 @@ export default function Landing() {
           />
           <Feature
             icon={<Users className="h-5 w-5" />}
-            title="Up to 12 friends"
-            body="Hosts can invite up to 12 participants per room — perfect for movie nights, demos, and tournaments."
+            title="One host, one guest"
+            body="The MVP is built for two-person private rooms: a host shares, a guest watches, and both can talk."
           />
           <Feature
             icon={<Sparkles className="h-5 w-5" />}

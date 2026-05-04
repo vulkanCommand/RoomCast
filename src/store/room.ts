@@ -1,186 +1,135 @@
 import { create } from "zustand";
-import type { ChatMessage, Participant, Room, User } from "@/types";
-import { hueFromString, initialsFrom, makeId, makeRoomCode } from "@/lib/roomcast";
+import type { Participant, Room, User } from "@/types";
+import { hueFromString, initialsFrom } from "@/lib/roomcast";
+import * as roomService from "@/services/roomService";
+import * as webrtcService from "@/services/webrtcService";
+import type { Unsubscribe } from "firebase/firestore";
+import type { RoomSnapshot } from "@/services/roomService";
 
 interface RoomState {
   room: Room | null;
   participants: Participant[];
-  messages: ChatMessage[];
+  currentRole: "host" | "guest" | null;
+  connectionStatus: "idle" | "waiting" | "connecting" | "connected" | "ended" | "error";
   sharingUserId: string | null;
+  roomCode: string | null;
+  error: string | null;
   // actions
-  createRoom: (host: User, name: string) => Room;
-  joinRoomByCode: (code: string, user: User) => Room | null;
-  joinRoom: (room: Room, user: User) => void;
+  createRoom: (host: User, name: string) => Promise<Room>;
+  joinRoomByCode: (code: string, user: User) => Promise<Room | null>;
+  joinRoom: (roomIdOrCode: string, user: User) => Promise<Room | null>;
+  subscribeToRoom: (roomId: string, currentUser: User) => Unsubscribe;
   leaveRoom: (userId: string) => void;
-  endRoom: () => void;
-  startSharing: (userId: string) => void;
+  endRoom: () => Promise<void>;
+  startSharing: (userId: string) => Promise<void>;
   stopSharing: () => void;
   setSpeaking: (userId: string, speaking: boolean) => void;
   setMuted: (userId: string, muted: boolean) => void;
-  sendMessage: (user: User, text: string) => void;
-  addSystemMessage: (text: string) => void;
   reset: () => void;
 }
 
-const seedParticipants = (host: User): Participant[] => [
-  {
-    id: host.id,
-    displayName: host.displayName,
-    initials: host.initials,
-    avatarColor: host.avatarColor,
-    role: "host",
-    isSharing: false,
+function participantFor(id: string, role: "host" | "guest", currentUser: User, room: RoomSnapshot | Room): Participant {
+  const isMe = id === currentUser.id;
+  const profile = "participantProfiles" in room ? room.participantProfiles?.[id] : undefined;
+  const fallbackName = role === "host" ? "Host" : "Guest";
+  const displayName = isMe ? currentUser.displayName : profile?.displayName || fallbackName;
+  return {
+    id,
+    displayName,
+    initials: initialsFrom(displayName),
+    avatarColor: isMe ? currentUser.avatarColor : hueFromString(id),
+    role,
+    isSharing: room.hostId === id && room.status === "connected",
     isSpeaking: false,
-    isMuted: false,
+    isMuted: !isMe,
     joinedAt: Date.now(),
-  },
-];
-
-const demoNames = ["Ava Chen", "Marcus Lee", "Priya Singh", "Diego Alvarez"];
+  };
+}
 
 export const useRoomStore = create<RoomState>((set, get) => ({
   room: null,
   participants: [],
-  messages: [],
+  currentRole: null,
+  connectionStatus: "idle",
   sharingUserId: null,
+  roomCode: null,
+  error: null,
 
-  createRoom: (host, name) => {
+  createRoom: async (host, name) => {
+    set({ connectionStatus: "connecting", error: null });
+    const created = await roomService.createRoom(name);
     const room: Room = {
-      id: makeId("room"),
-      code: makeRoomCode(),
-      name: name || "Untitled Room",
+      id: created.roomId,
+      code: created.roomCode,
+      name,
       hostId: host.id,
-      status: "lobby",
+      guestId: null,
+      status: "waiting",
       createdAt: Date.now(),
-      maxParticipants: 12,
+      maxParticipants: 2,
     };
-    // add a couple of demo guests for cinematic feel
-    const guests: Participant[] = demoNames.slice(0, 2).map((n) => ({
-      id: makeId("usr"),
-      displayName: n,
-      initials: initialsFrom(n),
-      avatarColor: hueFromString(n),
-      role: "guest",
-      isSharing: false,
-      isSpeaking: false,
-      isMuted: true,
-      joinedAt: Date.now(),
-    }));
     set({
       room,
-      participants: [...seedParticipants(host), ...guests],
-      messages: [
-        {
-          id: makeId("msg"),
-          roomId: room.id,
-          userId: "system",
-          displayName: "RoomCast",
-          initials: "RC",
-          avatarColor: "265",
-          text: `Room "${room.name}" created. Share code ${room.code} to invite.`,
-          createdAt: Date.now(),
-          system: true,
-        },
-      ],
+      participants: [participantFor(host.id, "host", host, room)],
+      currentRole: "host",
+      connectionStatus: "waiting",
       sharingUserId: null,
+      roomCode: created.roomCode,
     });
     return room;
   },
 
-  joinRoomByCode: (code, user) => {
-    const upper = code.trim().toUpperCase();
-    let room = get().room;
-    if (!room || room.code !== upper) {
-      // mock: create a synthetic room with a fake host
-      const fakeHost: Participant = {
-        id: makeId("usr"),
-        displayName: "Ava Chen",
-        initials: "AC",
-        avatarColor: hueFromString("Ava Chen"),
-        role: "host",
-        isSharing: true,
-        isSpeaking: false,
-        isMuted: false,
-        joinedAt: Date.now() - 60_000,
+  joinRoomByCode: (code, user) => get().joinRoom(code, user),
+
+  joinRoom: async (roomIdOrCode, user) => {
+    set({ connectionStatus: "connecting", error: null });
+    try {
+      const joined = await roomService.joinRoom(roomIdOrCode);
+      const room: Room = {
+        id: joined.roomId,
+        code: joined.roomCode,
+        name: "RoomCast room",
+        hostId: "",
+        status: "connected",
+        createdAt: Date.now(),
+        maxParticipants: 2,
       };
-      room = {
-        id: makeId("room"),
-        code: upper,
-        name: "Movie Night",
-        hostId: fakeHost.id,
-        status: "live",
-        createdAt: Date.now() - 60_000,
-        startedAt: Date.now() - 30_000,
-        maxParticipants: 12,
-      };
-      const others: Participant[] = ["Marcus Lee", "Priya Singh"].map((n) => ({
-        id: makeId("usr"),
-        displayName: n,
-        initials: initialsFrom(n),
-        avatarColor: hueFromString(n),
-        role: "guest",
-        isSharing: false,
-        isSpeaking: false,
-        isMuted: true,
-        joinedAt: Date.now() - 20_000,
-      }));
-      set({
-        room,
-        participants: [fakeHost, ...others],
-        sharingUserId: fakeHost.id,
-        messages: [
-          {
-            id: makeId("msg"),
-            roomId: room.id,
-            userId: "system",
-            displayName: "RoomCast",
-            initials: "RC",
-            avatarColor: "265",
-            text: `You joined ${room.name}.`,
-            createdAt: Date.now(),
-            system: true,
-          },
-        ],
-      });
+      set({ room, roomCode: joined.roomCode, connectionStatus: "connected" });
+      return room;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not join room.";
+      set({ error: message, connectionStatus: "error" });
+      throw error;
     }
-    get().joinRoom(room, user);
-    return room;
   },
 
-  joinRoom: (room, user) => {
-    set((s) => {
-      if (s.participants.some((p) => p.id === user.id)) return s;
-      const me: Participant = {
-        id: user.id,
-        displayName: user.displayName,
-        initials: user.initials,
-        avatarColor: user.avatarColor,
-        role: room.hostId === user.id ? "host" : "guest",
-        isSharing: false,
-        isSpeaking: false,
-        isMuted: true,
-        joinedAt: Date.now(),
-      };
-      return {
-        room,
-        participants: [...s.participants, me],
-        messages: [
-          ...s.messages,
-          {
-            id: makeId("msg"),
-            roomId: room.id,
-            userId: "system",
-            displayName: "RoomCast",
-            initials: "RC",
-            avatarColor: "265",
-            text: `${user.displayName} joined the room.`,
-            createdAt: Date.now(),
-            system: true,
-          },
-        ],
-      };
-    });
-  },
+  subscribeToRoom: (roomId, currentUser) =>
+    roomService.subscribeToRoom(roomId, (snapshot) => {
+      if (!snapshot) {
+        set({ room: null, participants: [], connectionStatus: "ended", error: "Room not found." });
+        return;
+      }
+      const ids = Object.keys(snapshot.participantsMap || {});
+      const participants = ids
+        .map((id) => {
+          if (id === snapshot.hostId) return participantFor(id, "host", currentUser, snapshot);
+          if (id === snapshot.guestId) return participantFor(id, "guest", currentUser, snapshot);
+          return null;
+        })
+        .filter(Boolean) as Participant[];
+      const currentRole = snapshot.hostId === currentUser.id ? "host" : snapshot.guestId === currentUser.id ? "guest" : null;
+      set((state) => ({
+        room: snapshot,
+        participants: participants.map((next) => {
+          const previous = state.participants.find((p) => p.id === next.id);
+          return previous ? { ...next, isSpeaking: previous.isSpeaking, isMuted: previous.isMuted } : next;
+        }),
+        currentRole,
+        connectionStatus: snapshot.status === "ended" ? "ended" : snapshot.status,
+        sharingUserId: snapshot.offer && snapshot.status !== "ended" ? snapshot.hostId : state.sharingUserId,
+        roomCode: snapshot.code,
+      }));
+    }),
 
   leaveRoom: (userId) =>
     set((s) => ({
@@ -188,25 +137,31 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       sharingUserId: s.sharingUserId === userId ? null : s.sharingUserId,
     })),
 
-  endRoom: () =>
-    set((s) =>
-      s.room
-        ? { room: { ...s.room, status: "ended", endedAt: Date.now() }, sharingUserId: null }
-        : s,
-    ),
+  endRoom: async () => {
+    const roomId = get().room?.id;
+    if (roomId) await roomService.endRoom(roomId);
+    webrtcService.cleanupConnection();
+    set((s) => (s.room ? { room: { ...s.room, status: "ended", endedAt: Date.now() }, sharingUserId: null } : s));
+  },
 
-  startSharing: (userId) =>
+  startSharing: async (userId) => {
+    const roomId = get().room?.id;
+    if (!roomId) return;
+    await webrtcService.createHostOffer(roomId);
     set((s) => ({
       sharingUserId: userId,
-      room: s.room ? { ...s.room, status: "live", startedAt: s.room.startedAt ?? Date.now() } : s.room,
+      room: s.room ? { ...s.room, status: "connected", startedAt: s.room.startedAt ?? Date.now() } : s.room,
       participants: s.participants.map((p) => ({ ...p, isSharing: p.id === userId })),
-    })),
+    }));
+  },
 
-  stopSharing: () =>
+  stopSharing: () => {
+    webrtcService.cleanupConnection();
     set((s) => ({
       sharingUserId: null,
       participants: s.participants.map((p) => ({ ...p, isSharing: false })),
-    })),
+    }));
+  },
 
   setSpeaking: (userId, speaking) =>
     set((s) => ({
@@ -218,49 +173,16 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       participants: s.participants.map((p) => (p.id === userId ? { ...p, isMuted: muted } : p)),
     })),
 
-  sendMessage: (user, text) => {
-    const t = text.trim();
-    if (!t) return;
-    set((s) => {
-      if (!s.room) return s;
-      return {
-        messages: [
-          ...s.messages,
-          {
-            id: makeId("msg"),
-            roomId: s.room.id,
-            userId: user.id,
-            displayName: user.displayName,
-            initials: user.initials,
-            avatarColor: user.avatarColor,
-            text: t,
-            createdAt: Date.now(),
-          },
-        ],
-      };
+  reset: () => {
+    webrtcService.cleanupConnection();
+    set({
+      room: null,
+      participants: [],
+      currentRole: null,
+      connectionStatus: "idle",
+      sharingUserId: null,
+      roomCode: null,
+      error: null,
     });
   },
-
-  addSystemMessage: (text) =>
-    set((s) => {
-      if (!s.room) return s;
-      return {
-        messages: [
-          ...s.messages,
-          {
-            id: makeId("msg"),
-            roomId: s.room.id,
-            userId: "system",
-            displayName: "RoomCast",
-            initials: "RC",
-            avatarColor: "265",
-            text,
-            createdAt: Date.now(),
-            system: true,
-          },
-        ],
-      };
-    }),
-
-  reset: () => set({ room: null, participants: [], messages: [], sharingUserId: null }),
 }));

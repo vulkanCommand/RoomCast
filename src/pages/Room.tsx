@@ -3,11 +3,10 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Copy,
   LogOut,
-  MessageSquare,
+  Mic,
   MonitorPlay,
   MonitorUp,
   PhoneOff,
-  Send,
   Settings2,
   StopCircle,
   Users,
@@ -19,7 +18,6 @@ import { LiveBadge } from "@/components/LiveBadge";
 import { AvatarOrb } from "@/components/AvatarOrb";
 import { PushToTalkButton } from "@/components/PushToTalkButton";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { useAuthStore } from "@/store/auth";
 import { useRoomStore } from "@/store/room";
@@ -27,45 +25,96 @@ import { useVoiceStore } from "@/store/voice";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/roomcast";
 import { toast } from "sonner";
+import * as webrtcService from "@/services/webrtcService";
 
-type SidePanel = "people" | "chat" | "settings" | null;
+type SidePanel = "people" | "voice" | "settings" | null;
 
 export default function Room() {
   const { roomId } = useParams();
   const nav = useNavigate();
-  const { user, isAuthed } = useAuthStore();
+  const { user } = useAuthStore();
   const {
     room,
     participants,
-    messages,
+    currentRole,
+    connectionStatus,
     sharingUserId,
+    joinRoom,
+    subscribeToRoom,
     startSharing,
     stopSharing,
-    sendMessage,
     leaveRoom,
     endRoom,
-    addSystemMessage,
   } = useRoomStore();
   const { shareVolume, setShareVolume, isTalking } = useVoiceStore();
-  const [panel, setPanel] = useState<SidePanel>("chat");
-  const [chatInput, setChatInput] = useState("");
-  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const [panel, setPanel] = useState<SidePanel>("voice");
   const [elapsed, setElapsed] = useState(0);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const guestStartedRef = useRef(false);
 
   useEffect(() => {
-    if (!isAuthed) nav("/login");
-  }, [isAuthed, nav]);
+    if (!roomId || !user) return;
+    let roomUnsub: (() => void) | undefined;
+    let cancelled = false;
+
+    joinRoom(roomId, user)
+      .then((joined) => {
+        if (cancelled || !joined) return;
+        roomUnsub = subscribeToRoom(joined.id, user);
+      })
+      .catch(() => {
+        toast.error("Could not open this room.");
+        nav("/home", { replace: true });
+      });
+
+    const localUnsub = webrtcService.onLocalStream(setLocalStream);
+    const remoteUnsub = webrtcService.onRemoteStream(setRemoteStream);
+    const speakingUnsub = webrtcService.onRemoteSpeaking((speaking) => {
+      const remoteParticipant = useRoomStore.getState().participants.find((p) => p.id !== user.id);
+      if (remoteParticipant) useRoomStore.getState().setSpeaking(remoteParticipant.id, speaking);
+    });
+    const endedUnsub = webrtcService.onSharingEnded(() => {
+      stopSharing();
+      toast.info("Screen sharing stopped");
+    });
+
+    return () => {
+      cancelled = true;
+      roomUnsub?.();
+      localUnsub();
+      remoteUnsub();
+      speakingUnsub();
+      endedUnsub();
+    };
+  }, [joinRoom, nav, roomId, stopSharing, subscribeToRoom, user]);
 
   useEffect(() => {
-    if (!room || room.id !== roomId) {
-      // if no live room (e.g., direct URL refresh), bounce home
-      if (!room) nav("/home");
-    }
-  }, [room, roomId, nav]);
+    if (!room || currentRole !== "guest" || !room.id || !sharingUserId || guestStartedRef.current) return;
+    guestStartedRef.current = true;
+    webrtcService.joinAsGuest(room.id).catch(() => {
+      guestStartedRef.current = false;
+      toast.error("Could not connect to the host stream.");
+    });
+  }, [currentRole, room, sharingUserId]);
 
   useEffect(() => {
-    chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages.length]);
+    const stream = sharingUserId === user.id ? localStream : remoteStream;
+    if (!screenVideoRef.current) return;
+    screenVideoRef.current.srcObject = stream;
+  }, [localStream, remoteStream, sharingUserId, user.id]);
+
+  useEffect(() => {
+    if (!remoteAudioRef.current || !remoteStream) return;
+    remoteAudioRef.current.srcObject = remoteStream;
+  }, [remoteStream]);
+
+  useEffect(() => {
+    const ducked = isTalking || participants.some((p) => p.id !== user.id && p.isSpeaking);
+    if (screenVideoRef.current) screenVideoRef.current.volume = ducked ? 0.25 : shareVolume;
+  }, [isTalking, participants, shareVolume, remoteStream, user.id]);
 
   useEffect(() => {
     if (!room?.startedAt) return;
@@ -75,7 +124,11 @@ export default function Room() {
 
   const me = useMemo(() => participants.find((p) => p.id === user?.id), [participants, user]);
   const sharer = useMemo(() => participants.find((p) => p.id === sharingUserId), [participants, sharingUserId]);
-  const isHost = me?.role === "host";
+  const isHost = currentRole === "host" || me?.role === "host";
+  const screenStream = sharingUserId === user.id ? localStream : remoteStream;
+  const hasScreenVideo = Boolean(screenStream?.getVideoTracks().length);
+  const isViewingOwnShare = sharingUserId === user.id;
+  const shouldDuck = isTalking || participants.some((p) => p.id !== user.id && p.isSpeaking);
 
   if (!room || !user) return null;
 
@@ -88,40 +141,44 @@ export default function Room() {
     }
   };
 
-  const onShare = async () => {
-    // PLACEHOLDER: real getDisplayMedia call wired later by Codex.
-    // const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-    startSharing(user.id);
-    addSystemMessage(`${user.displayName} started sharing.`);
-    toast.success("Sharing your screen");
+  const onCopyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      toast.success("Invite link copied");
+    } catch {
+      toast.error("Could not copy invite link");
+    }
   };
 
-  const onStopShare = () => {
-    stopSharing();
-    addSystemMessage(`${user.displayName} stopped sharing.`);
+  const onShare = async () => {
+    if (!isHost) {
+      toast.error("Only the host can share in this MVP.");
+      return;
+    }
+    try {
+      await startSharing(user.id);
+      toast.success("Sharing your screen");
+    } catch {
+      toast.error("Screen sharing did not start.");
+    }
   };
+
+  const onStopShare = () => stopSharing();
 
   const onLeave = () => {
     leaveRoom(user.id);
-    if (isHost) endRoom();
+    webrtcService.cleanupConnection();
+    if (isHost) void endRoom();
     nav(`/ended?room=${room.id}`);
   };
 
-  const onEnd = () => {
-    endRoom();
+  const onEnd = async () => {
+    await endRoom();
     nav(`/ended?room=${room.id}`);
-  };
-
-  const onSend = (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!chatInput.trim()) return;
-    sendMessage(user, chatInput);
-    setChatInput("");
   };
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {/* Top bar */}
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 glass px-4 py-3">
         <div className="flex items-center gap-3">
           <Link to="/home" aria-label="RoomCast home">
@@ -131,7 +188,7 @@ export default function Room() {
           <div className="hidden flex-col sm:flex">
             <span className="font-display text-sm font-semibold">{room.name}</span>
             <span className="text-[11px] text-muted-foreground">
-              {participants.length}/{room.maxParticipants} watching · {formatDuration(elapsed)}
+              {participants.length}/{room.maxParticipants} in room · {formatDuration(elapsed)}
             </span>
           </div>
         </div>
@@ -151,8 +208,8 @@ export default function Room() {
           <IconBtn active={panel === "people"} onClick={() => setPanel(panel === "people" ? null : "people")} label="People">
             <Users className="h-4 w-4" />
           </IconBtn>
-          <IconBtn active={panel === "chat"} onClick={() => setPanel(panel === "chat" ? null : "chat")} label="Chat">
-            <MessageSquare className="h-4 w-4" />
+          <IconBtn active={panel === "voice"} onClick={() => setPanel(panel === "voice" ? null : "voice")} label="Voice">
+            <Mic className="h-4 w-4" />
           </IconBtn>
           <IconBtn active={panel === "settings"} onClick={() => setPanel(panel === "settings" ? null : "settings")} label="Settings">
             <Settings2 className="h-4 w-4" />
@@ -168,19 +225,19 @@ export default function Room() {
         </div>
       </header>
 
-      {/* Main */}
       <div className="flex min-h-0 flex-1">
-        {/* Stage */}
         <main className="relative flex min-w-0 flex-1 flex-col">
           <div className="relative flex flex-1 items-center justify-center overflow-hidden p-4">
             <div className="relative h-full w-full overflow-hidden rounded-2xl border border-border/70 bg-black shadow-elevated">
-              {sharer ? (
-                <ScreenStage sharerName={sharer.displayName} sharerHue={sharer.avatarColor} />
+              {hasScreenVideo ? (
+                <VideoStage videoRef={screenVideoRef} muted={isViewingOwnShare} />
+              ) : sharer ? (
+                <ConnectingStage sharerName={sharer.displayName} />
               ) : (
-                <EmptyStage canShare onShare={onShare} />
+                <EmptyStage canShare={isHost} onShare={onShare} />
               )}
+              <audio ref={remoteAudioRef} autoPlay playsInline />
 
-              {/* Speaking overlay strip */}
               <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-2">
                 {sharer && (
                   <div className="pointer-events-auto flex items-center gap-2 rounded-full glass px-2.5 py-1.5 text-xs">
@@ -191,7 +248,6 @@ export default function Room() {
                 )}
               </div>
 
-              {/* Active speakers ribbon */}
               <div className="pointer-events-none absolute right-4 top-4 flex flex-col items-end gap-2">
                 {participants
                   .filter((p) => p.isSpeaking)
@@ -208,7 +264,6 @@ export default function Room() {
             </div>
           </div>
 
-          {/* Bottom dock */}
           <div className="shrink-0 border-t border-border/60 bg-card/40 px-4 py-4 backdrop-blur">
             <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
@@ -217,13 +272,13 @@ export default function Room() {
                     <StopCircle className="h-4 w-4" /> Stop sharing
                   </Button>
                 ) : (
-                  <Button onClick={onShare} className="bg-gradient-primary text-primary-foreground shadow-glow">
+                  <Button onClick={onShare} disabled={!isHost} className="bg-gradient-primary text-primary-foreground shadow-glow">
                     <MonitorUp className="h-4 w-4" /> Share screen
                   </Button>
                 )}
 
                 <div className="hidden items-center gap-2 rounded-full glass px-3 py-2 sm:flex">
-                  <Volume2 className={cn("h-4 w-4", isTalking ? "text-primary" : "text-muted-foreground")} />
+                  <Volume2 className={cn("h-4 w-4", shouldDuck ? "text-primary" : "text-muted-foreground")} />
                   <Slider
                     value={[Math.round(shareVolume * 100)]}
                     onValueChange={(v) => setShareVolume(v[0] / 100)}
@@ -242,7 +297,6 @@ export default function Room() {
           </div>
         </main>
 
-        {/* Side panel */}
         {panel && (
           <aside className="flex w-full max-w-sm shrink-0 flex-col border-l border-border/60 bg-card/40 backdrop-blur">
             <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
@@ -281,47 +335,27 @@ export default function Room() {
               </div>
             )}
 
-            {panel === "chat" && (
-              <>
-                <div ref={chatScrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
-                  {messages.map((m) => (
-                    <div key={m.id} className={cn("flex gap-3", m.system && "opacity-80")}>
-                      {!m.system && <AvatarOrb initials={m.initials} hue={m.avatarColor} size="sm" />}
-                      <div className={cn("min-w-0 flex-1", m.system && "text-center text-xs text-muted-foreground")}>
-                        {m.system ? (
-                          <span>{m.text}</span>
-                        ) : (
-                          <>
-                            <div className="flex items-baseline gap-2">
-                              <span className="text-sm font-semibold">{m.displayName}</span>
-                              <span className="text-[10px] text-muted-foreground">
-                                {new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                              </span>
-                            </div>
-                            <p className="text-sm leading-relaxed text-foreground/90 break-words">{m.text}</p>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <form onSubmit={onSend} className="flex items-center gap-2 border-t border-border/60 p-3">
-                  <Input
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    placeholder="Send a message"
-                    className="bg-background/40"
-                  />
-                  <Button type="submit" size="icon" className="bg-gradient-primary text-primary-foreground">
-                    <Send className="h-4 w-4" />
-                  </Button>
-                </form>
-              </>
+            {panel === "voice" && (
+              <div className="flex-1 space-y-5 overflow-y-auto p-5 text-sm">
+                <SettingRow title="Voice channel" hint="Push-to-talk controls your real microphone track when WebRTC is connected.">
+                  <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
+                    {isTalking ? "Transmitting now" : "Idle · microphone track disabled"}
+                  </div>
+                </SettingRow>
+                <SettingRow title="Connection" hint="Firestore handles signaling. WebRTC moves the live media directly.">
+                  <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground capitalize">
+                    {connectionStatus}
+                  </div>
+                </SettingRow>
+                <Button variant="outline" className="w-full" onClick={onCopyInvite}>
+                  <Copy className="h-4 w-4" /> Copy invite link
+                </Button>
+              </div>
             )}
 
             {panel === "settings" && (
               <div className="flex-1 space-y-6 overflow-y-auto p-5 text-sm">
-                <SettingRow title="Share audio" hint="Volume of the shared screen audio. Auto-ducks while you talk.">
+                <SettingRow title="Share audio" hint="Volume of RoomCast-owned shared media. Auto-ducks while you talk.">
                   <div className="flex items-center gap-3">
                     <Slider
                       value={[Math.round(shareVolume * 100)]}
@@ -341,9 +375,9 @@ export default function Room() {
                   </div>
                 </SettingRow>
 
-                <SettingRow title="Microphone" hint="Real device selection wires later via WebRTC.">
+                <SettingRow title="Microphone" hint="Captured by your browser and sent over WebRTC only while push-to-talk is active.">
                   <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
-                    Default device · placeholder
+                    Default browser microphone
                   </div>
                 </SettingRow>
 
@@ -394,7 +428,7 @@ function SettingRow({ title, hint, children }: { title: string; hint: string; ch
   );
 }
 
-function EmptyStage({ onShare }: { canShare?: boolean; onShare: () => void }) {
+function EmptyStage({ canShare, onShare }: { canShare: boolean; onShare: () => void }) {
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-[#15102e] via-[#0a0a18] to-[#070a13]">
       <div className="absolute inset-0 grid-bg opacity-40" />
@@ -405,45 +439,43 @@ function EmptyStage({ onShare }: { canShare?: boolean; onShare: () => void }) {
         <div>
           <h2 className="font-display text-2xl font-semibold">Nobody is sharing yet</h2>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            Share your screen to start the watch party. Voice channel is already open — hold Space to talk.
+            {canShare
+              ? "Share your screen to start the private watch room. Voice is push-to-talk."
+              : "Waiting for the host to start screen sharing. Voice is push-to-talk."}
           </p>
         </div>
-        <Button onClick={onShare} className="bg-gradient-primary text-primary-foreground shadow-glow">
-          <MonitorUp className="h-4 w-4" /> Share your screen
-        </Button>
+        {canShare && (
+          <Button onClick={onShare} className="bg-gradient-primary text-primary-foreground shadow-glow">
+            <MonitorUp className="h-4 w-4" /> Share your screen
+          </Button>
+        )}
       </div>
     </div>
   );
 }
 
-function ScreenStage({ sharerName, sharerHue }: { sharerName: string; sharerHue: string }) {
+function ConnectingStage({ sharerName }: { sharerName: string }) {
   return (
-    <div className="absolute inset-0">
-      {/* Mock cinematic screen surface */}
-      <div
-        className="absolute inset-0"
-        style={{
-          background: `radial-gradient(800px 500px at 30% 20%, hsl(${sharerHue} 80% 30% / 0.55), transparent 60%),
-                       radial-gradient(700px 500px at 80% 90%, hsl(${(parseInt(sharerHue) + 60) % 360} 80% 30% / 0.45), transparent 60%),
-                       linear-gradient(180deg, #06070d, #03040a)`,
-        }}
-      />
-      <div className="absolute inset-0 grid-bg opacity-30" />
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="text-center">
-          <div className="mx-auto mb-4 h-1 w-16 rounded-full bg-gradient-aurora" />
-          <p className="font-display text-2xl font-semibold">{sharerName}'s screen</p>
-          <p className="mt-1 text-sm text-muted-foreground">Live · 1080p · WebRTC placeholder</p>
-        </div>
+    <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-[#15102e] via-[#0a0a18] to-[#070a13]">
+      <div className="absolute inset-0 grid-bg opacity-40" />
+      <div className="relative text-center">
+        <div className="mx-auto mb-4 h-1 w-16 rounded-full bg-gradient-aurora" />
+        <p className="font-display text-2xl font-semibold">{sharerName}'s screen</p>
+        <p className="mt-1 text-sm text-muted-foreground">Connecting WebRTC stream...</p>
       </div>
-      {/* film grain */}
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.06] mix-blend-overlay"
-        style={{
-          backgroundImage:
-            "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.5'/></svg>\")",
-        }}
-      />
     </div>
+  );
+}
+
+function VideoStage({ videoRef, muted }: { videoRef: React.RefObject<HTMLVideoElement>; muted?: boolean }) {
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      muted={muted}
+      controls
+      className="absolute inset-0 h-full w-full bg-black object-contain"
+    />
   );
 }

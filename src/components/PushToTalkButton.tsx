@@ -4,13 +4,14 @@ import { cn } from "@/lib/utils";
 import { useVoiceStore } from "@/store/voice";
 import { useRoomStore } from "@/store/room";
 import { useAuthStore } from "@/store/auth";
+import * as webrtcService from "@/services/webrtcService";
 
 /**
  * Premium push-to-talk button.
  * - Hold spacebar OR press-and-hold the button to talk
  * - Ducks share audio from 100% -> 25% while talking
  * - Pulsing ring + waveform when active
- * NOTE: Real WebRTC mic capture is wired later. This UI is fully mock-ready.
+ * Controls the WebRTC microphone track. The mic remains disabled unless held.
  */
 export function PushToTalkButton() {
   const { user } = useAuthStore();
@@ -56,9 +57,8 @@ export function PushToTalkButton() {
 
   const requestMic = async () => {
     try {
-      // PLACEHOLDER: real getUserMedia hook lives here when WebRTC is wired.
-      // await navigator.mediaDevices.getUserMedia({ audio: true });
-      setMicEnabled(true);
+      await webrtcService.startMicrophone();
+      setMicEnabled(false);
       setGranted(true);
     } catch {
       setGranted(false);
