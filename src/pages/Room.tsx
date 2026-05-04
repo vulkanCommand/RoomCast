@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Copy,
@@ -188,7 +188,7 @@ export default function Room() {
           <div className="hidden flex-col sm:flex">
             <span className="font-display text-sm font-semibold">{room.name}</span>
             <span className="text-[11px] text-muted-foreground">
-              {participants.length}/{room.maxParticipants} in room · {formatDuration(elapsed)}
+              {participants.length}/{room.maxParticipants} in room - {formatDuration(elapsed)}
             </span>
           </div>
         </div>
@@ -325,8 +325,8 @@ export default function Room() {
                         </div>
                         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                           <span className="capitalize">{p.role}</span>
-                          {p.isSharing && <span className="text-primary">· sharing</span>}
-                          {p.isSpeaking && <span className="text-success">· speaking</span>}
+                          {p.isSharing && <span className="text-primary">- sharing</span>}
+                          {p.isSpeaking && <span className="text-success">- speaking</span>}
                         </div>
                       </div>
                     </li>
@@ -339,7 +339,7 @@ export default function Room() {
               <div className="flex-1 space-y-5 overflow-y-auto p-5 text-sm">
                 <SettingRow title="Voice channel" hint="Push-to-talk controls your real microphone track when WebRTC is connected.">
                   <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
-                    {isTalking ? "Transmitting now" : "Idle · microphone track disabled"}
+                    {isTalking ? "Transmitting now" : "Idle - microphone track disabled"}
                   </div>
                 </SettingRow>
                 <SettingRow title="Connection" hint="Firestore handles signaling. WebRTC moves the live media directly.">
@@ -479,3 +479,4 @@ function VideoStage({ videoRef, muted }: { videoRef: React.RefObject<HTMLVideoEl
     />
   );
 }
+

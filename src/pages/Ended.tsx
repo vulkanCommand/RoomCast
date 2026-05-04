@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+﻿import { Link } from "react-router-dom";
 import { Home, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -22,8 +22,8 @@ export default function Ended() {
         <p className="mt-2 text-muted-foreground">Thanks for watching together. Your room is now closed.</p>
 
         <div className="mt-8 grid grid-cols-3 gap-3">
-          <Stat label="Room" value={room?.name ?? "—"} />
-          <Stat label="Duration" value={duration ? formatDuration(duration) : "—"} mono />
+          <Stat label="Room" value={room?.name ?? "-"} />
+          <Stat label="Duration" value={duration ? formatDuration(duration) : "-"} mono />
           <Stat label="Watched" value={`${participants.length}`} mono />
         </div>
 
@@ -52,3 +52,4 @@ function Stat({ label, value, mono }: { label: string; value: string; mono?: boo
     </div>
   );
 }
+

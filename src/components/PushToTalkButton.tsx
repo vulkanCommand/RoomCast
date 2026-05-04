@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useVoiceStore } from "@/store/voice";
@@ -105,7 +105,7 @@ export function PushToTalkButton() {
         />
       </button>
       <div className="flex flex-col">
-        <span className="text-sm font-medium">{isTalking ? "Transmitting…" : "Hold to talk"}</span>
+        <span className="text-sm font-medium">{isTalking ? "Transmitting..." : "Hold to talk"}</span>
         <span className="text-xs text-muted-foreground">Hold Space or this button</span>
         {isTalking && (
           <div className="mt-1 flex h-3 items-end gap-0.5">
@@ -122,3 +122,4 @@ export function PushToTalkButton() {
     </div>
   );
 }
+

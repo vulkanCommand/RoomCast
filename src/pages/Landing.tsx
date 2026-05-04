@@ -1,4 +1,4 @@
-import { Link, useNavigate } from "react-router-dom";
+﻿import { Link, useNavigate } from "react-router-dom";
 import { ArrowRight, MonitorPlay, Mic, Lock, Sparkles, Users, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -18,7 +18,7 @@ export default function Landing() {
           <div className="mx-auto max-w-3xl text-center">
             <div className="mb-6 inline-flex items-center gap-2 rounded-full glass px-3 py-1 text-xs text-muted-foreground animate-fade-in">
               <Sparkles className="h-3.5 w-3.5 text-primary" />
-              Now in private beta · WebRTC-grade latency
+              Now in private beta - WebRTC-grade latency
             </div>
             <h1 className="font-display text-5xl font-semibold leading-[1.05] tracking-tight sm:text-6xl md:text-7xl animate-fade-in-up">
               Private watch rooms with{" "}
@@ -26,7 +26,7 @@ export default function Landing() {
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground animate-fade-in-up">
               RoomCast turns any browser tab into a cinematic shared screening. Invite friends with a code,
-              share your screen, and hold the spacebar to speak — like you're in the same room.
+              share your screen, and hold the spacebar to speak like you're in the same room.
             </p>
             <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Button
@@ -66,7 +66,7 @@ export default function Landing() {
                       <MonitorPlay className="h-10 w-10 text-primary-foreground" />
                     </div>
                     <p className="font-display text-xl">Ava is sharing her screen</p>
-                    <p className="text-sm text-muted-foreground">Host and guest � voice channel open</p>
+                    <p className="text-sm text-muted-foreground">Host and guest - voice channel open</p>
                   </div>
                 </div>
                 <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between">
@@ -98,7 +98,7 @@ export default function Landing() {
           <Feature
             icon={<MonitorPlay className="h-5 w-5" />}
             title="Cinematic screen sharing"
-            body="WebRTC-grade screen sharing with adaptive bitrate. Anything in your tab — streamed crisply to your room."
+            body="WebRTC-grade screen sharing with adaptive bitrate. Anything in your tab, streamed crisply to your room."
           />
           <Feature
             icon={<Mic className="h-5 w-5" />}
@@ -150,7 +150,7 @@ export default function Landing() {
       <footer className="border-t border-border/60">
         <div className="container flex flex-col items-center justify-between gap-3 py-8 text-xs text-muted-foreground sm:flex-row">
           <BrandLogo size="sm" />
-          <span>© {new Date().getFullYear()} RoomCast — Private watch rooms.</span>
+          <span>Copyright {new Date().getFullYear()} RoomCast - Private watch rooms.</span>
         </div>
       </footer>
     </main>
@@ -168,3 +168,4 @@ function Feature({ icon, title, body }: { icon: React.ReactNode; title: string; 
     </div>
   );
 }
+
