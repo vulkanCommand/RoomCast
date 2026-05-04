@@ -1,98 +1,39 @@
 # RoomCast
 
-RoomCast is a private two-person watch room app for sharing a browser tab or desktop window with a guest. It uses Google sign-in, Firebase callable Functions for room creation/joining, Firestore for WebRTC signaling, and direct WebRTC peer connections for screen and voice streams.
+RoomCast is a private two-person watch room built for simple, low-friction screen sharing. A host creates a room, invites one guest with a short code, and streams their screen directly through WebRTC for a shared viewing experience.
 
 ## Features
 
-- Google-only sign-in with Firebase Authentication
-- Private room creation with a six-character invite code
-- Two-person host/guest room flow
-- Host screen sharing with local preview
-- Guest WebRTC playback of the host stream
-- Push-to-talk microphone support
-- Firestore-backed WebRTC signaling
-- Firebase Hosting deployment with SPA rewrites
+- Google sign-in for quick, familiar access
+- Private two-person rooms for host and guest sessions
+- Six-character room codes for easy invites
+- Host screen sharing with an in-room preview
+- Seamless peer-to-peer streaming powered by WebRTC
+- Firestore-backed signaling for fast room connection setup
+- Push-to-talk voice so viewers can talk without drowning out the shared media
+- Automatic room lifecycle handling when sessions end
+- Clean theater-style viewing interface
+- No mock room history or fake stored watch activity
 
-## Tech Stack
+## WebRTC Streaming
 
-- React 18
-- TypeScript
-- Vite
-- Tailwind CSS
-- shadcn/ui and Radix UI
-- Zustand
-- Firebase Authentication
-- Firebase Hosting
-- Cloud Firestore
-- Cloud Functions for Firebase
-- WebRTC
+RoomCast uses WebRTC to move live screen and audio streams directly between the host and guest whenever possible. Firebase handles authentication, room creation, and signaling, while the actual media experience is peer-to-peer for lower latency and a more natural watch-room feel.
 
-## Local Setup
+The host can share a browser tab, window, or screen, and the guest receives the live stream inside the RoomCast room. The host also sees a local preview of what is being shared, making it easier to keep the viewing session coordinated.
 
-Install dependencies:
+## Experience
 
-```bash
-npm install
-```
+RoomCast is designed around a focused flow:
 
-Create a `.env` file from the example:
+1. Sign in with Google.
+2. Name a room.
+3. Share the room code or invite link.
+4. Start screen sharing.
+5. Watch together with push-to-talk voice.
 
-```bash
-cp .env.example .env
-```
+## Notes
 
-Fill in the Firebase web app values:
-
-```env
-VITE_FIREBASE_API_KEY=your_api_key
-VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your_project_id
-VITE_FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
-VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-VITE_FIREBASE_APP_ID=your_app_id
-```
-
-Run the app:
-
-```bash
-npm run dev
-```
-
-## Firebase Setup
-
-Enable these Firebase/Google Cloud products:
-
-- Firebase Authentication with Google sign-in
-- Firebase Hosting
-- Cloud Firestore
-- Cloud Functions
-
-Deploy Firestore rules and Functions:
-
-```bash
-firebase deploy --only "firestore,functions"
-```
-
-Deploy the web app:
-
-```bash
-npm run build
-firebase deploy --only hosting
-```
-
-## Important Notes
-
-RoomCast uses browser screen sharing. Protected streaming services such as Netflix, Amazon Prime Video, Disney+, and similar DRM-protected platforms may block capture or show a black screen. This is enforced by browsers and content providers. RoomCast is intended for content you are allowed to share, such as owned media, presentations, non-DRM browser tabs, and compatible video sources.
-
-## Scripts
-
-```bash
-npm run dev       # Start Vite dev server
-npm run build     # Build production assets
-npm run preview   # Preview production build
-npm run lint      # Run ESLint
-npm run test      # Run Vitest
-```
+RoomCast works best with content that browsers allow to be captured, such as presentations, owned media, non-DRM browser tabs, and compatible video sources. Some protected streaming platforms may block screen capture at the browser or operating-system level.
 
 ## License
 
