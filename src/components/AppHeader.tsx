@@ -61,8 +61,8 @@ export function AppHeader() {
   return (
     <header className="sticky top-0 z-40">
       <div className="glass border-b border-border/60">
-        <div className="container flex h-16 items-center justify-between">
-          <Link to={isAuthed ? "/home" : "/"} className="flex items-center">
+        <div className="container flex h-16 items-center justify-between gap-2">
+          <Link to={isAuthed ? "/home" : "/"} className="flex shrink-0 items-center">
             <BrandLogo />
           </Link>
           <nav className="hidden items-center gap-1 md:flex">
@@ -73,7 +73,7 @@ export function AppHeader() {
               </>
             )}
           </nav>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             <SupportButton />
             {isAuthed ? (
               <>
