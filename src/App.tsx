@@ -5,6 +5,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppHeader } from "@/components/AppHeader";
+import { DesktopOnlyGate } from "@/components/DesktopOnlyGate";
 import { useAuthStore } from "@/store/auth";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
@@ -36,15 +37,17 @@ function AppRoutes() {
   return (
     <>
       <AppHeader />
-      <Routes>
-        <Route path="/" element={<Landing />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/home" element={<RequireAuth><Home /></RequireAuth>} />
-        <Route path="/join" element={<RequireAuth><Join /></RequireAuth>} />
-        <Route path="/room/:roomId" element={<RequireAuth><Room /></RequireAuth>} />
-        <Route path="/ended" element={<Ended />} />
-        <Route path="*" element={<NotFound />} />
-      </Routes>
+      <DesktopOnlyGate>
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/home" element={<RequireAuth><Home /></RequireAuth>} />
+          <Route path="/join" element={<RequireAuth><Join /></RequireAuth>} />
+          <Route path="/room/:roomId" element={<RequireAuth><Room /></RequireAuth>} />
+          <Route path="/ended" element={<Ended />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </DesktopOnlyGate>
     </>
   );
 }
