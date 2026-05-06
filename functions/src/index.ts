@@ -79,10 +79,10 @@ export const createRoom = onCall(async (request) => {
     participants: { [uid]: true },
     participantProfiles: { [uid]: hostProfile },
     status: "waiting",
+    sharingStatus: "stopped",
+    activeSessionId: null,
     createdAt: FieldValue.serverTimestamp(),
     expiresAt,
-    offer: null,
-    answer: null,
   });
 
   return { roomId: roomRef.id, roomCode };
@@ -130,10 +130,92 @@ export const endRoom = onCall(async (request) => {
     if (!snap.exists) throw new HttpsError("not-found", "Room not found.");
     const room = snap.data() || {};
     if (room.hostUid !== uid) throw new HttpsError("permission-denied", "Only the host can end this room.");
+    const activeSessionId = typeof room.activeSessionId === "string" ? room.activeSessionId : null;
     tx.update(roomRef, {
       status: "ended",
+      sharingStatus: "stopped",
+      activeSessionId: null,
       endedAt: FieldValue.serverTimestamp(),
     });
+    if (activeSessionId) {
+      tx.set(roomRef.collection("sessions").doc(activeSessionId), {
+        status: "stopped",
+        stoppedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+  });
+
+  return { ok: true };
+});
+
+export const startRoomSession = onCall(async (request) => {
+  const uid = requireUid(request.auth?.uid);
+  const roomId = String(request.data?.roomId || "");
+  if (!roomId) throw new HttpsError("invalid-argument", "roomId is required.");
+
+  const roomRef = db.collection("rooms").doc(roomId);
+  const sessionRef = roomRef.collection("sessions").doc();
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(roomRef);
+    if (!snap.exists) throw new HttpsError("not-found", "Room not found.");
+    const room = snap.data() || {};
+    if (room.hostUid !== uid) throw new HttpsError("permission-denied", "Only the host can start sharing.");
+    if (room.status === "ended") throw new HttpsError("failed-precondition", "This room has ended.");
+
+    const previousSessionId = typeof room.activeSessionId === "string" ? room.activeSessionId : null;
+    if (previousSessionId) {
+      tx.set(roomRef.collection("sessions").doc(previousSessionId), {
+        status: "stopped",
+        stoppedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    tx.set(sessionRef, {
+      sessionId: sessionRef.id,
+      status: "starting",
+      offer: null,
+      answer: null,
+      createdAt: FieldValue.serverTimestamp(),
+      hostUid: uid,
+      guestUid: room.guestUid || null,
+    });
+
+    tx.update(roomRef, {
+      activeSessionId: sessionRef.id,
+      sharingStatus: "sharing",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  return { sessionId: sessionRef.id };
+});
+
+export const stopRoomSession = onCall(async (request) => {
+  const uid = requireUid(request.auth?.uid);
+  const roomId = String(request.data?.roomId || "");
+  if (!roomId) throw new HttpsError("invalid-argument", "roomId is required.");
+
+  const roomRef = db.collection("rooms").doc(roomId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(roomRef);
+    if (!snap.exists) throw new HttpsError("not-found", "Room not found.");
+    const room = snap.data() || {};
+    if (room.hostUid !== uid) throw new HttpsError("permission-denied", "Only the host can stop sharing.");
+
+    const activeSessionId = typeof room.activeSessionId === "string" ? room.activeSessionId : null;
+    tx.update(roomRef, {
+      activeSessionId: null,
+      sharingStatus: "stopped",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    if (activeSessionId) {
+      tx.set(roomRef.collection("sessions").doc(activeSessionId), {
+        status: "stopped",
+        stoppedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
   });
 
   return { ok: true };

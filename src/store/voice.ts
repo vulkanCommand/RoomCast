@@ -1,40 +1,84 @@
 import { create } from "zustand";
 import * as webrtcService from "@/services/webrtcService";
+import { computeActualMicEnabled, type MicMode } from "@/lib/voice";
 
 interface VoiceState {
-  // local mic state
-  micEnabled: boolean;
+  hasMicPermission: boolean;
+  micMode: MicMode;
+  pushToTalkActive: boolean;
+  actualMicEnabled: boolean;
   isTalking: boolean;
-  // ducking: when talking, screen share audio is reduced
-  shareVolume: number; // 0..1
-  // who is speaking right now (mock: id list)
+  shareVolume: number;
   speakingUserIds: string[];
-  setMicEnabled: (v: boolean) => void;
+  setMicPermission: (v: boolean) => void;
+  setMicMode: (mode: MicMode) => void;
   startTalking: () => void;
   stopTalking: () => void;
   setShareVolume: (v: number) => void;
   setSpeakingUsers: (ids: string[]) => void;
+  reset: () => void;
 }
 
-export const useVoiceStore = create<VoiceState>((set) => ({
-  micEnabled: false,
+function syncMicState(
+  set: (partial: Partial<VoiceState>) => void,
+  next: Pick<VoiceState, "micMode" | "pushToTalkActive" | "hasMicPermission" | "shareVolume" | "speakingUserIds">,
+) {
+  const actualMicEnabled = next.hasMicPermission && computeActualMicEnabled(next.micMode, next.pushToTalkActive);
+  webrtcService.setMicEnabled(actualMicEnabled);
+  set({
+    ...next,
+    actualMicEnabled,
+    isTalking: next.micMode === "push-to-talk" && next.pushToTalkActive,
+  });
+}
+
+export const useVoiceStore = create<VoiceState>((set, get) => ({
+  hasMicPermission: false,
+  micMode: "push-to-talk",
+  pushToTalkActive: false,
+  actualMicEnabled: false,
   isTalking: false,
   shareVolume: 1,
   speakingUserIds: [],
-  setMicEnabled: (v) => {
-    webrtcService.setMicEnabled(v);
-    set({ micEnabled: v });
+
+  setMicPermission: (v) => {
+    const state = get();
+    syncMicState(set, { ...state, hasMicPermission: v });
   },
+
+  setMicMode: (mode) => {
+    const state = get();
+    const pushToTalkActive = mode === "always-on" ? false : state.pushToTalkActive;
+    syncMicState(set, { ...state, micMode: mode, pushToTalkActive });
+  },
+
   startTalking: () => {
-    webrtcService.setMicEnabled(true);
+    const state = get();
+    if (state.micMode === "always-on") return;
     webrtcService.sendSpeaking(true);
-    set({ micEnabled: true, isTalking: true, shareVolume: 0.25 });
+    syncMicState(set, { ...state, pushToTalkActive: true });
   },
+
   stopTalking: () => {
-    webrtcService.setMicEnabled(false);
+    const state = get();
+    if (state.micMode === "always-on") return;
     webrtcService.sendSpeaking(false);
-    set({ micEnabled: false, isTalking: false, shareVolume: 1 });
+    syncMicState(set, { ...state, pushToTalkActive: false });
   },
+
   setShareVolume: (v) => set({ shareVolume: v }),
   setSpeakingUsers: (ids) => set({ speakingUserIds: ids }),
+
+  reset: () => {
+    webrtcService.setMicEnabled(false);
+    set({
+      hasMicPermission: false,
+      micMode: "push-to-talk",
+      pushToTalkActive: false,
+      actualMicEnabled: false,
+      isTalking: false,
+      shareVolume: 1,
+      speakingUserIds: [],
+    });
+  },
 }));

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.cleanupExpiredRooms = exports.endRoom = exports.joinRoom = exports.createRoom = void 0;
+exports.cleanupExpiredRooms = exports.stopRoomSession = exports.startRoomSession = exports.endRoom = exports.joinRoom = exports.createRoom = void 0;
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
 const https_1 = require("firebase-functions/v2/https");
@@ -74,10 +74,10 @@ exports.createRoom = (0, https_1.onCall)(async (request) => {
         participants: { [uid]: true },
         participantProfiles: { [uid]: hostProfile },
         status: "waiting",
+        sharingStatus: "stopped",
+        activeSessionId: null,
         createdAt: firestore_1.FieldValue.serverTimestamp(),
         expiresAt,
-        offer: null,
-        answer: null,
     });
     return { roomId: roomRef.id, roomCode };
 });
@@ -123,10 +123,87 @@ exports.endRoom = (0, https_1.onCall)(async (request) => {
         const room = snap.data() || {};
         if (room.hostUid !== uid)
             throw new https_1.HttpsError("permission-denied", "Only the host can end this room.");
+        const activeSessionId = typeof room.activeSessionId === "string" ? room.activeSessionId : null;
         tx.update(roomRef, {
             status: "ended",
+            sharingStatus: "stopped",
+            activeSessionId: null,
             endedAt: firestore_1.FieldValue.serverTimestamp(),
         });
+        if (activeSessionId) {
+            tx.set(roomRef.collection("sessions").doc(activeSessionId), {
+                status: "stopped",
+                stoppedAt: firestore_1.FieldValue.serverTimestamp(),
+            }, { merge: true });
+        }
+    });
+    return { ok: true };
+});
+exports.startRoomSession = (0, https_1.onCall)(async (request) => {
+    const uid = requireUid(request.auth?.uid);
+    const roomId = String(request.data?.roomId || "");
+    if (!roomId)
+        throw new https_1.HttpsError("invalid-argument", "roomId is required.");
+    const roomRef = db.collection("rooms").doc(roomId);
+    const sessionRef = roomRef.collection("sessions").doc();
+    await db.runTransaction(async (tx) => {
+        const snap = await tx.get(roomRef);
+        if (!snap.exists)
+            throw new https_1.HttpsError("not-found", "Room not found.");
+        const room = snap.data() || {};
+        if (room.hostUid !== uid)
+            throw new https_1.HttpsError("permission-denied", "Only the host can start sharing.");
+        if (room.status === "ended")
+            throw new https_1.HttpsError("failed-precondition", "This room has ended.");
+        const previousSessionId = typeof room.activeSessionId === "string" ? room.activeSessionId : null;
+        if (previousSessionId) {
+            tx.set(roomRef.collection("sessions").doc(previousSessionId), {
+                status: "stopped",
+                stoppedAt: firestore_1.FieldValue.serverTimestamp(),
+            }, { merge: true });
+        }
+        tx.set(sessionRef, {
+            sessionId: sessionRef.id,
+            status: "starting",
+            offer: null,
+            answer: null,
+            createdAt: firestore_1.FieldValue.serverTimestamp(),
+            hostUid: uid,
+            guestUid: room.guestUid || null,
+        });
+        tx.update(roomRef, {
+            activeSessionId: sessionRef.id,
+            sharingStatus: "sharing",
+            updatedAt: firestore_1.FieldValue.serverTimestamp(),
+        });
+    });
+    return { sessionId: sessionRef.id };
+});
+exports.stopRoomSession = (0, https_1.onCall)(async (request) => {
+    const uid = requireUid(request.auth?.uid);
+    const roomId = String(request.data?.roomId || "");
+    if (!roomId)
+        throw new https_1.HttpsError("invalid-argument", "roomId is required.");
+    const roomRef = db.collection("rooms").doc(roomId);
+    await db.runTransaction(async (tx) => {
+        const snap = await tx.get(roomRef);
+        if (!snap.exists)
+            throw new https_1.HttpsError("not-found", "Room not found.");
+        const room = snap.data() || {};
+        if (room.hostUid !== uid)
+            throw new https_1.HttpsError("permission-denied", "Only the host can stop sharing.");
+        const activeSessionId = typeof room.activeSessionId === "string" ? room.activeSessionId : null;
+        tx.update(roomRef, {
+            activeSessionId: null,
+            sharingStatus: "stopped",
+            updatedAt: firestore_1.FieldValue.serverTimestamp(),
+        });
+        if (activeSessionId) {
+            tx.set(roomRef.collection("sessions").doc(activeSessionId), {
+                status: "stopped",
+                stoppedAt: firestore_1.FieldValue.serverTimestamp(),
+            }, { merge: true });
+        }
     });
     return { ok: true };
 });

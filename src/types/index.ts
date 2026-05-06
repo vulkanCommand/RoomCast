@@ -24,6 +24,7 @@ export interface Participant {
 }
 
 export type RoomStatus = "waiting" | "connected" | "ended";
+export type SharingStatus = "stopped" | "sharing" | "reconnecting";
 
 export interface Room {
   id: string;
@@ -37,4 +38,6 @@ export interface Room {
   startedAt?: number;
   endedAt?: number;
   maxParticipants: number;
+  activeSessionId?: string | null;
+  sharingStatus?: SharingStatus;
 }

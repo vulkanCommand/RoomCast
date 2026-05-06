@@ -22,26 +22,32 @@ service cloud.firestore {
       allow read: if isParticipantData(resource.data);
       allow create: if false;
       allow delete: if false;
-      allow update: if signedIn()
-        && isParticipantData(resource.data)
-        && (
-          (request.auth.uid == resource.data.hostUid
-            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['offer']))
-          ||
-          (request.auth.uid == resource.data.guestUid
-            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['answer']))
-        );
+      allow update: if false;
 
-      match /hostCandidates/{candidateId} {
+      match /sessions/{sessionId} {
         allow read: if isParticipant(roomId);
-        allow create: if signedIn() && request.auth.uid == room(roomId).data.hostUid;
-        allow update, delete: if false;
-      }
+        allow create, delete: if false;
+        allow update: if signedIn()
+          && isParticipant(roomId)
+          && (
+            (request.auth.uid == room(roomId).data.hostUid
+              && request.resource.data.diff(resource.data).changedKeys().hasOnly(['offer', 'status']))
+            ||
+            (request.auth.uid == room(roomId).data.guestUid
+              && request.resource.data.diff(resource.data).changedKeys().hasOnly(['answer', 'status']))
+          );
 
-      match /guestCandidates/{candidateId} {
-        allow read: if isParticipant(roomId);
-        allow create: if signedIn() && request.auth.uid == room(roomId).data.guestUid;
-        allow update, delete: if false;
+        match /hostCandidates/{candidateId} {
+          allow read: if isParticipant(roomId);
+          allow create: if signedIn() && request.auth.uid == room(roomId).data.hostUid;
+          allow update, delete: if false;
+        }
+
+        match /guestCandidates/{candidateId} {
+          allow read: if isParticipant(roomId);
+          allow create: if signedIn() && request.auth.uid == room(roomId).data.guestUid;
+          allow update, delete: if false;
+        }
       }
     }
   }

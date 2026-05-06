@@ -12,6 +12,7 @@ interface RoomState {
   currentRole: "host" | "guest" | null;
   connectionStatus: "idle" | "waiting" | "connecting" | "connected" | "ended" | "error";
   sharingUserId: string | null;
+  activeSessionId: string | null;
   roomCode: string | null;
   error: string | null;
   // actions
@@ -22,7 +23,7 @@ interface RoomState {
   leaveRoom: (userId: string) => void;
   endRoom: () => Promise<void>;
   startSharing: (userId: string) => Promise<void>;
-  stopSharing: () => void;
+  stopSharing: () => Promise<void>;
   setSpeaking: (userId: string, speaking: boolean) => void;
   setMuted: (userId: string, muted: boolean) => void;
   reset: () => void;
@@ -52,6 +53,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   currentRole: null,
   connectionStatus: "idle",
   sharingUserId: null,
+  activeSessionId: null,
   roomCode: null,
   error: null,
 
@@ -74,6 +76,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       currentRole: "host",
       connectionStatus: "waiting",
       sharingUserId: null,
+      activeSessionId: null,
       roomCode: created.roomCode,
     });
     return room;
@@ -125,8 +128,14 @@ export const useRoomStore = create<RoomState>((set, get) => ({
           return previous ? { ...next, isSpeaking: previous.isSpeaking, isMuted: previous.isMuted } : next;
         }),
         currentRole,
-        connectionStatus: snapshot.status === "ended" ? "ended" : snapshot.status,
-        sharingUserId: snapshot.offer && snapshot.status !== "ended" ? snapshot.hostId : state.sharingUserId,
+        connectionStatus:
+          snapshot.status === "ended"
+            ? "ended"
+            : snapshot.activeSessionId
+              ? "connected"
+              : snapshot.status,
+        sharingUserId: snapshot.activeSessionId && snapshot.status !== "ended" ? snapshot.hostId : null,
+        activeSessionId: snapshot.activeSessionId || null,
         roomCode: snapshot.code,
       }));
     }),
@@ -135,30 +144,39 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     set((s) => ({
       participants: s.participants.filter((p) => p.id !== userId),
       sharingUserId: s.sharingUserId === userId ? null : s.sharingUserId,
+      activeSessionId: s.activeSessionId,
     })),
 
   endRoom: async () => {
     const roomId = get().room?.id;
     if (roomId) await roomService.endRoom(roomId);
     webrtcService.cleanupConnection();
-    set((s) => (s.room ? { room: { ...s.room, status: "ended", endedAt: Date.now() }, sharingUserId: null } : s));
+    set((s) =>
+      s.room
+        ? { room: { ...s.room, status: "ended", endedAt: Date.now() }, sharingUserId: null, activeSessionId: null }
+        : s,
+    );
   },
 
   startSharing: async (userId) => {
     const roomId = get().room?.id;
     if (!roomId) return;
-    await webrtcService.createHostOffer(roomId);
+    const { sessionId } = await webrtcService.startHostSession(roomId);
     set((s) => ({
       sharingUserId: userId,
+      activeSessionId: sessionId,
       room: s.room ? { ...s.room, status: "connected", startedAt: s.room.startedAt ?? Date.now() } : s.room,
       participants: s.participants.map((p) => ({ ...p, isSharing: p.id === userId })),
     }));
   },
 
-  stopSharing: () => {
-    webrtcService.cleanupConnection();
+  stopSharing: async () => {
+    const roomId = get().room?.id;
+    if (!roomId) return;
+    await webrtcService.stopSharingSession(roomId);
     set((s) => ({
       sharingUserId: null,
+      activeSessionId: null,
       participants: s.participants.map((p) => ({ ...p, isSharing: false })),
     }));
   },
@@ -181,6 +199,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       currentRole: null,
       connectionStatus: "idle",
       sharingUserId: null,
+      activeSessionId: null,
       roomCode: null,
       error: null,
     });

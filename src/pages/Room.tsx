@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Copy,
@@ -19,10 +19,13 @@ import { AvatarOrb } from "@/components/AvatarOrb";
 import { PushToTalkButton } from "@/components/PushToTalkButton";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { useAuthStore } from "@/store/auth";
 import { useRoomStore } from "@/store/room";
 import { useVoiceStore } from "@/store/voice";
 import { cn } from "@/lib/utils";
+import { shouldHandlePushToTalkKey } from "@/lib/keyboard";
+import { voiceModeLabel } from "@/lib/voice";
 import { formatDuration } from "@/lib/roomcast";
 import { toast } from "sonner";
 import * as webrtcService from "@/services/webrtcService";
@@ -39,6 +42,7 @@ export default function Room() {
     currentRole,
     connectionStatus,
     sharingUserId,
+    activeSessionId,
     joinRoom,
     subscribeToRoom,
     startSharing,
@@ -46,14 +50,26 @@ export default function Room() {
     leaveRoom,
     endRoom,
   } = useRoomStore();
-  const { shareVolume, setShareVolume, isTalking } = useVoiceStore();
+  const {
+    shareVolume,
+    setShareVolume,
+    isTalking,
+    micMode,
+    setMicMode,
+    hasMicPermission,
+    setMicPermission,
+    actualMicEnabled,
+    startTalking,
+    stopTalking,
+  } = useVoiceStore();
   const [panel, setPanel] = useState<SidePanel>("voice");
   const [elapsed, setElapsed] = useState(0);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [isStartingShare, setIsStartingShare] = useState(false);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
-  const guestStartedRef = useRef(false);
+  const recoveredHostSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!roomId || !user) return;
@@ -77,8 +93,8 @@ export default function Room() {
       if (remoteParticipant) useRoomStore.getState().setSpeaking(remoteParticipant.id, speaking);
     });
     const endedUnsub = webrtcService.onSharingEnded(() => {
-      stopSharing();
-      toast.info("Screen sharing stopped");
+      void stopSharing();
+      toast.info("Screen sharing stopped. You can start sharing again.");
     });
 
     return () => {
@@ -92,13 +108,60 @@ export default function Room() {
   }, [joinRoom, nav, roomId, stopSharing, subscribeToRoom, user]);
 
   useEffect(() => {
-    if (!room || currentRole !== "guest" || !room.id || !sharingUserId || guestStartedRef.current) return;
-    guestStartedRef.current = true;
-    webrtcService.joinAsGuest(room.id).catch(() => {
-      guestStartedRef.current = false;
-      toast.error("Could not connect to the host stream.");
-    });
-  }, [currentRole, room, sharingUserId]);
+    if (!room?.id || currentRole !== "guest" || !activeSessionId) return;
+    void webrtcService.joinGuestSession(room.id, activeSessionId)
+      .then(() => setMicPermission(true))
+      .catch(() => {
+        toast.error("Could not connect to the host stream.");
+      });
+  }, [activeSessionId, currentRole, room?.id, setMicPermission]);
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      webrtcService.clearSessionState();
+    }
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (
+      currentRole !== "host" ||
+      !room?.id ||
+      !activeSessionId ||
+      localStream ||
+      isStartingShare ||
+      recoveredHostSessionRef.current === activeSessionId
+    ) {
+      return;
+    }
+    recoveredHostSessionRef.current = activeSessionId;
+    void stopSharing();
+    toast.info("Recovered room state. Start screen sharing again when you're ready.");
+  }, [activeSessionId, currentRole, isStartingShare, localStream, room?.id, stopSharing]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (micMode === "always-on" || !shouldHandlePushToTalkKey(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      startTalking();
+      useRoomStore.getState().setSpeaking(user.id, true);
+    };
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || micMode === "always-on") return;
+      event.preventDefault();
+      event.stopPropagation();
+      stopTalking();
+      useRoomStore.getState().setSpeaking(user.id, false);
+    };
+
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    document.addEventListener("keyup", onKeyUp, { capture: true });
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, { capture: true });
+      document.removeEventListener("keyup", onKeyUp, { capture: true });
+    };
+  }, [micMode, startTalking, stopTalking, user.id]);
 
   useEffect(() => {
     const stream = sharingUserId === user.id ? localStream : remoteStream;
@@ -114,7 +177,7 @@ export default function Room() {
   useEffect(() => {
     const ducked = isTalking || participants.some((p) => p.id !== user.id && p.isSpeaking);
     if (screenVideoRef.current) screenVideoRef.current.volume = ducked ? 0.25 : shareVolume;
-  }, [isTalking, participants, shareVolume, remoteStream, user.id]);
+  }, [isTalking, participants, shareVolume, user.id]);
 
   useEffect(() => {
     if (!room?.startedAt) return;
@@ -156,14 +219,23 @@ export default function Room() {
       return;
     }
     try {
+      setIsStartingShare(true);
+      if (!hasMicPermission) {
+        await webrtcService.ensureMicrophoneAccess();
+        setMicPermission(true);
+      }
       await startSharing(user.id);
       toast.success("Sharing your screen");
     } catch {
-      toast.error("Screen sharing did not start.");
+      toast.error("Screen sharing did not start. Check screen and microphone permissions.");
+    } finally {
+      setIsStartingShare(false);
     }
   };
 
-  const onStopShare = () => stopSharing();
+  const onStopShare = () => {
+    void stopSharing();
+  };
 
   const onLeave = () => {
     leaveRoom(user.id);
@@ -231,7 +303,7 @@ export default function Room() {
             <div className="relative h-full w-full overflow-hidden rounded-2xl border border-border/70 bg-black shadow-elevated">
               {hasScreenVideo ? (
                 <VideoStage videoRef={screenVideoRef} muted={isViewingOwnShare} />
-              ) : sharer ? (
+              ) : activeSessionId && sharer ? (
                 <ConnectingStage sharerName={sharer.displayName} />
               ) : (
                 <EmptyStage canShare={isHost} onShare={onShare} />
@@ -337,24 +409,62 @@ export default function Room() {
 
             {panel === "voice" && (
               <div className="flex-1 space-y-5 overflow-y-auto p-5 text-sm">
-                <SettingRow title="Voice channel" hint="Push-to-talk controls your real microphone track when WebRTC is connected.">
+                <SettingRow title="Voice channel" hint="Browser permission is separate from whether your mic is actively transmitting.">
                   <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
-                    {isTalking ? "Transmitting now" : "Idle - microphone track disabled"}
+                    {!hasMicPermission
+                      ? "Microphone access required"
+                      : micMode === "always-on"
+                        ? "Mic live"
+                        : isTalking
+                          ? "Talking..."
+                          : "Push-to-talk mode"}
                   </div>
                 </SettingRow>
                 <SettingRow title="Connection" hint="Firestore handles signaling. WebRTC moves the live media directly.">
                   <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground capitalize">
-                    {connectionStatus}
+                    {activeSessionId && !hasScreenVideo ? "reconnecting" : connectionStatus}
                   </div>
                 </SettingRow>
                 <Button variant="outline" className="w-full" onClick={onCopyInvite}>
                   <Copy className="h-4 w-4" /> Copy invite link
                 </Button>
+                {!hasMicPermission && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={async () => {
+                      try {
+                        await webrtcService.ensureMicrophoneAccess();
+                        setMicPermission(true);
+                        toast.success("Microphone ready");
+                      } catch {
+                        toast.error("Microphone permission denied.");
+                      }
+                    }}
+                  >
+                    <Mic className="h-4 w-4" /> Enable microphone access
+                  </Button>
+                )}
               </div>
             )}
 
             {panel === "settings" && (
               <div className="flex-1 space-y-6 overflow-y-auto p-5 text-sm">
+                <SettingRow title="Microphone mode" hint="Choose between always-on voice and push-to-talk.">
+                  <div className="flex items-center justify-between rounded-lg border border-border/70 bg-background/40 px-3 py-3">
+                    <div>
+                      <div className="text-sm font-medium">{voiceModeLabel(micMode)}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {micMode === "always-on" ? "Mic stays live without holding Space." : "Hold Space or press Talk."}
+                      </div>
+                    </div>
+                    <Switch
+                      checked={micMode === "always-on"}
+                      onCheckedChange={(checked) => setMicMode(checked ? "always-on" : "push-to-talk")}
+                    />
+                  </div>
+                </SettingRow>
+
                 <SettingRow title="Share audio" hint="Volume of RoomCast-owned shared media. Auto-ducks while you talk.">
                   <div className="flex items-center gap-3">
                     <Slider
@@ -375,11 +485,23 @@ export default function Room() {
                   </div>
                 </SettingRow>
 
-                <SettingRow title="Microphone" hint="Captured by your browser and sent over WebRTC only while push-to-talk is active.">
+                <SettingRow title="Microphone" hint="Browser mic permission means RoomCast can access the device.">
                   <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
-                    Default browser microphone
+                    {hasMicPermission ? "Microphone access granted" : "Microphone access not granted"}
                   </div>
                 </SettingRow>
+
+                {!hasScreenVideo && activeSessionId && (
+                  <div className="rounded-xl border border-border/70 bg-secondary/30 p-3 text-xs text-muted-foreground">
+                    Reconnecting...
+                  </div>
+                )}
+
+                {!activeSessionId && sharingUserId !== user.id && (
+                  <div className="rounded-xl border border-border/70 bg-secondary/30 p-3 text-xs text-muted-foreground">
+                    Screen sharing stopped. You can start sharing again.
+                  </div>
+                )}
 
                 <div className="rounded-xl border border-border/70 bg-secondary/30 p-3 text-xs text-muted-foreground">
                   Tip: Screen sharing works best on desktop browsers (Chrome, Edge, Safari 17+).
@@ -440,8 +562,8 @@ function EmptyStage({ canShare, onShare }: { canShare: boolean; onShare: () => v
           <h2 className="font-display text-2xl font-semibold">Nobody is sharing yet</h2>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
             {canShare
-              ? "Share your screen to start the private watch room. Voice is push-to-talk."
-              : "Waiting for the host to start screen sharing. Voice is push-to-talk."}
+              ? "Share your screen to start the private watch room. Voice is ready when you are."
+              : "Waiting for the host to start screen sharing. Voice is ready when you are."}
           </p>
         </div>
         {canShare && (
@@ -461,7 +583,7 @@ function ConnectingStage({ sharerName }: { sharerName: string }) {
       <div className="relative text-center">
         <div className="mx-auto mb-4 h-1 w-16 rounded-full bg-gradient-aurora" />
         <p className="font-display text-2xl font-semibold">{sharerName}'s screen</p>
-        <p className="mt-1 text-sm text-muted-foreground">Connecting WebRTC stream...</p>
+        <p className="mt-1 text-sm text-muted-foreground">Reconnecting...</p>
       </div>
     </div>
   );
@@ -479,4 +601,3 @@ function VideoStage({ videoRef, muted }: { videoRef: React.RefObject<HTMLVideoEl
     />
   );
 }
-
