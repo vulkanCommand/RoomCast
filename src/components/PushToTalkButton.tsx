@@ -58,6 +58,7 @@ export function PushToTalkButton() {
         )}
         aria-pressed={isTalking}
         aria-label="Push to talk"
+        data-testid="push-to-talk"
         disabled={!hasMicPermission || micMode === "always-on"}
       >
         {hasMicPermission ? <Mic className="h-6 w-6" /> : <MicOff className="h-6 w-6" />}

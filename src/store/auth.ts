@@ -11,6 +11,7 @@ interface AuthState {
   isLoading: boolean;
   error: string | null;
   loginWithGoogle: () => Promise<void>;
+  loginWithEmailPassword: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   listenToAuthState: () => () => void;
 }
@@ -40,6 +41,18 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ user: mapFirebaseUser(result.user), isAuthed: true, isLoading: false });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not sign in with Google.";
+      set({ error: message, isLoading: false });
+      throw error;
+    }
+  },
+
+  loginWithEmailPassword: async (email, password) => {
+    set({ isLoading: true, error: null });
+    try {
+      const result = await authService.signInWithEmailPassword(email, password);
+      set({ user: mapFirebaseUser(result.user), isAuthed: true, isLoading: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not sign in with email and password.";
       set({ error: message, isLoading: false });
       throw error;
     }

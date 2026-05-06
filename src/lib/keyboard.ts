@@ -5,6 +5,10 @@ export function isEditableTarget(target: EventTarget | null) {
   );
 }
 
+export function shouldBlockRoomSpaceKey(event: Pick<KeyboardEvent, "code" | "target">) {
+  return event.code === "Space" && !isEditableTarget(event.target);
+}
+
 export function shouldHandlePushToTalkKey(event: Pick<KeyboardEvent, "code" | "repeat" | "target">) {
-  return event.code === "Space" && !event.repeat && !isEditableTarget(event.target);
+  return shouldBlockRoomSpaceKey(event) && !event.repeat;
 }

@@ -24,9 +24,10 @@ import { useAuthStore } from "@/store/auth";
 import { useRoomStore } from "@/store/room";
 import { useVoiceStore } from "@/store/voice";
 import { cn } from "@/lib/utils";
-import { shouldHandlePushToTalkKey } from "@/lib/keyboard";
+import { shouldBlockRoomSpaceKey, shouldHandlePushToTalkKey } from "@/lib/keyboard";
 import { voiceModeLabel } from "@/lib/voice";
 import { formatDuration } from "@/lib/roomcast";
+import { isQaMode } from "@/lib/qa";
 import { toast } from "sonner";
 import * as webrtcService from "@/services/webrtcService";
 
@@ -140,17 +141,19 @@ export default function Room() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (micMode === "always-on" || !shouldHandlePushToTalkKey(event)) return;
+      if (!shouldBlockRoomSpaceKey(event)) return;
       event.preventDefault();
       event.stopPropagation();
+      if (micMode === "always-on" || event.repeat) return;
       startTalking();
       useRoomStore.getState().setSpeaking(user.id, true);
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      if (event.code !== "Space" || micMode === "always-on") return;
+      if (!shouldBlockRoomSpaceKey(event)) return;
       event.preventDefault();
       event.stopPropagation();
+      if (micMode === "always-on") return;
       stopTalking();
       useRoomStore.getState().setSpeaking(user.id, false);
     };
@@ -192,6 +195,7 @@ export default function Room() {
   const hasScreenVideo = Boolean(screenStream?.getVideoTracks().length);
   const isViewingOwnShare = sharingUserId === user.id;
   const shouldDuck = isTalking || participants.some((p) => p.id !== user.id && p.isSpeaking);
+  const qaMode = isQaMode();
 
   if (!room || !user) return null;
 
@@ -226,7 +230,8 @@ export default function Room() {
       }
       await startSharing(user.id);
       toast.success("Sharing your screen");
-    } catch {
+    } catch (error) {
+      console.error("Start sharing failed", error);
       toast.error("Screen sharing did not start. Check screen and microphone permissions.");
     } finally {
       setIsStartingShare(false);
@@ -340,11 +345,11 @@ export default function Room() {
             <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 {sharingUserId === user.id ? (
-                  <Button variant="destructive" onClick={onStopShare}>
+                  <Button variant="destructive" onClick={onStopShare} data-testid="stop-sharing">
                     <StopCircle className="h-4 w-4" /> Stop sharing
                   </Button>
                 ) : (
-                  <Button onClick={onShare} disabled={!isHost} className="bg-gradient-primary text-primary-foreground shadow-glow">
+                  <Button onClick={onShare} disabled={!isHost} className="bg-gradient-primary text-primary-foreground shadow-glow" data-testid="share-screen">
                     <MonitorUp className="h-4 w-4" /> Share screen
                   </Button>
                 )}
@@ -501,6 +506,19 @@ export default function Room() {
                   <div className="rounded-xl border border-border/70 bg-secondary/30 p-3 text-xs text-muted-foreground">
                     Screen sharing stopped. You can start sharing again.
                   </div>
+                )}
+
+                {qaMode && sharingUserId === user.id && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    data-testid="qa-native-stop"
+                    onClick={() => {
+                      webrtcService.simulateNativeShareStopForQa();
+                    }}
+                  >
+                    Simulate browser stop sharing
+                  </Button>
                 )}
 
                 <div className="rounded-xl border border-border/70 bg-secondary/30 p-3 text-xs text-muted-foreground">

@@ -64,12 +64,14 @@ export default function Home() {
               onChange={(e) => setName(e.target.value)}
               placeholder="Name this room"
               className="bg-background/40 sm:flex-1"
+              data-testid="room-name-input"
             />
             <Button
               type="button"
               onClick={onCreate}
               disabled={!roomName}
               className="bg-gradient-primary text-primary-foreground shadow-glow"
+              data-testid="create-room"
             >
               <Plus className="h-4 w-4" /> Create room
             </Button>

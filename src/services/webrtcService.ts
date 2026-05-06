@@ -8,6 +8,8 @@ import {
 } from "firebase/firestore";
 import { getFirestoreInstance } from "@/services/firebase";
 import * as roomService from "@/services/roomService";
+import { createQaMicrophoneStream, createQaScreenShareStream, stopQaManagedStream } from "@/lib/qaMedia";
+import { isQaMode } from "@/lib/qa";
 
 type Role = "host" | "guest";
 
@@ -27,10 +29,60 @@ let currentRole: Role | null = null;
 let desiredMicEnabled = false;
 let sessionUnsub: Unsubscribe | null = null;
 let candidateUnsubs: Unsubscribe[] = [];
+let pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 let localStreamHandler: ((stream: MediaStream | null) => void) | null = null;
 let remoteStreamHandler: ((stream: MediaStream | null) => void) | null = null;
 let remoteSpeakingHandler: ((speaking: boolean) => void) | null = null;
 let sharingEndedHandler: (() => void) | null = null;
+let qaNativeStopHandler: (() => void) | null = null;
+
+function publishDebugState() {
+  if (!import.meta.env.DEV || typeof window === "undefined") return;
+  window.__roomcastDebug = {
+    role: currentRole,
+    roomId: currentRoomId,
+    sessionId: currentSessionId,
+    localScreenTracks: localScreenStream?.getTracks().map((track) => ({
+      id: track.id,
+      kind: track.kind,
+      readyState: track.readyState,
+      enabled: track.enabled,
+    })) || [],
+    localMicTracks: localMicStream?.getTracks().map((track) => ({
+      id: track.id,
+      kind: track.kind,
+      readyState: track.readyState,
+      enabled: track.enabled,
+    })) || [],
+    remoteTracks: remoteStream?.getTracks().map((track) => ({
+      id: track.id,
+      kind: track.kind,
+      readyState: track.readyState,
+      enabled: track.enabled,
+    })) || [],
+    senders: peerConnection?.getSenders().map((sender) => ({
+      kind: sender.track?.kind || null,
+      id: sender.track?.id || null,
+      readyState: sender.track?.readyState || null,
+    })) || [],
+    receivers: peerConnection?.getReceivers().map((receiver) => ({
+      kind: receiver.track?.kind || null,
+      id: receiver.track?.id || null,
+      readyState: receiver.track?.readyState || null,
+    })) || [],
+    signalingState: peerConnection?.signalingState || null,
+    iceConnectionState: peerConnection?.iceConnectionState || null,
+    connectionState: peerConnection?.connectionState || null,
+    localDescriptionType: peerConnection?.localDescription?.type || null,
+    remoteDescriptionType: peerConnection?.remoteDescription?.type || null,
+    localDescriptionSdp: peerConnection?.localDescription?.sdp || null,
+    remoteDescriptionSdp: peerConnection?.remoteDescription?.sdp || null,
+  };
+}
+
+function snapshotStream(stream: MediaStream | null) {
+  return stream ? new MediaStream(stream.getTracks()) : null;
+}
 
 export function onLocalStream(callback: (stream: MediaStream | null) => void) {
   localStreamHandler = callback;
@@ -42,7 +94,7 @@ export function onLocalStream(callback: (stream: MediaStream | null) => void) {
 
 export function onRemoteStream(callback: (stream: MediaStream | null) => void) {
   remoteStreamHandler = callback;
-  callback(remoteStream);
+  callback(snapshotStream(remoteStream));
   return () => {
     if (remoteStreamHandler === callback) remoteStreamHandler = null;
   };
@@ -90,7 +142,8 @@ function createPeerConnection() {
   peerConnection?.close();
   peerConnection = new RTCPeerConnection(iceServers);
   remoteStream = new MediaStream();
-  remoteStreamHandler?.(remoteStream);
+  remoteStreamHandler?.(snapshotStream(remoteStream));
+  publishDebugState();
   peerConnection.ondatachannel = (event) => {
     wireDataChannel(event.channel);
   };
@@ -99,32 +152,55 @@ function createPeerConnection() {
       remoteStream = new MediaStream();
       remoteStreamHandler?.(remoteStream);
     }
-    event.streams[0]?.getTracks().forEach((track) => {
+    const tracks = event.streams[0]?.getTracks().length ? event.streams[0].getTracks() : [event.track];
+    tracks.forEach((track) => {
       if (!remoteStream?.getTracks().some((existing) => existing.id === track.id)) {
         remoteStream?.addTrack(track);
       }
     });
-    if (remoteStream) remoteStreamHandler?.(remoteStream);
+    if (remoteStream) remoteStreamHandler?.(snapshotStream(remoteStream));
+    publishDebugState();
   };
+  peerConnection.onconnectionstatechange = () => publishDebugState();
+  peerConnection.oniceconnectionstatechange = () => publishDebugState();
   return peerConnection;
 }
 
 async function ensureMicrophone() {
   if (!localMicStream) {
-    localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    localMicStream = isQaMode()
+      ? createQaMicrophoneStream()
+      : await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     micTrack = localMicStream.getAudioTracks()[0] || null;
   }
   applyMicState();
+  publishDebugState();
   return localMicStream;
 }
 
 async function startScreenShare() {
-  localScreenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  localScreenStream = isQaMode()
+    ? await createQaScreenShareStream()
+    : await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   localStreamHandler?.(localScreenStream);
-  localScreenStream.getVideoTracks()[0]?.addEventListener("ended", () => {
+  publishDebugState();
+  let endedHandled = false;
+  const handleEnded = () => {
+    if (endedHandled) return;
+    endedHandled = true;
     localStreamHandler?.(null);
+    localScreenStream = null;
+    qaNativeStopHandler = null;
+    publishDebugState();
     sharingEndedHandler?.();
-  });
+  };
+  localScreenStream.getVideoTracks()[0]?.addEventListener("ended", handleEnded);
+  qaNativeStopHandler = isQaMode()
+    ? () => {
+        localScreenStream?.getVideoTracks()[0]?.stop();
+        handleEnded();
+      }
+    : null;
   return localScreenStream;
 }
 
@@ -132,6 +208,7 @@ function addLocalTracks(pc: RTCPeerConnection, streams: MediaStream[]) {
   streams.forEach((stream) => {
     stream.getTracks().forEach((track) => pc.addTrack(track, stream));
   });
+  publishDebugState();
 }
 
 function cleanupSessionListeners() {
@@ -139,12 +216,16 @@ function cleanupSessionListeners() {
   sessionUnsub = null;
   candidateUnsubs.forEach((unsub) => unsub());
   candidateUnsubs = [];
+  pendingRemoteCandidates = [];
 }
 
 function stopScreenTracks() {
+  qaNativeStopHandler = null;
+  stopQaManagedStream(localScreenStream);
   localScreenStream?.getTracks().forEach((track) => track.stop());
   localScreenStream = null;
   localStreamHandler?.(null);
+  publishDebugState();
 }
 
 function cleanupPeerConnection({ preserveMic = true }: { preserveMic?: boolean } = {}) {
@@ -159,10 +240,12 @@ function cleanupPeerConnection({ preserveMic = true }: { preserveMic?: boolean }
   remoteStreamHandler?.(null);
   remoteSpeakingHandler?.(false);
   if (!preserveMic) {
+    stopQaManagedStream(localMicStream);
     localMicStream?.getTracks().forEach((track) => track.stop());
     localMicStream = null;
     micTrack = null;
   }
+  publishDebugState();
 }
 
 function collectIceCandidates(roomId: string, sessionId: string, role: Role) {
@@ -178,6 +261,16 @@ function collectIceCandidates(roomId: string, sessionId: string, role: Role) {
   peerConnection.onicecandidate = (event) => {
     if (event.candidate) void addDoc(candidatesRef, event.candidate.toJSON());
   };
+  publishDebugState();
+}
+
+async function flushPendingRemoteCandidates() {
+  if (!peerConnection?.remoteDescription) return;
+  const candidates = [...pendingRemoteCandidates];
+  pendingRemoteCandidates = [];
+  for (const candidate of candidates) {
+    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+  }
 }
 
 function listenForRemoteCandidates(roomId: string, sessionId: string, role: Role) {
@@ -188,7 +281,12 @@ function listenForRemoteCandidates(roomId: string, sessionId: string, role: Role
     (snapshot) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === "added") {
-          void peerConnection?.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+          const candidate = change.doc.data() as RTCIceCandidateInit;
+          if (!peerConnection?.remoteDescription) {
+            pendingRemoteCandidates.push(candidate);
+            return;
+          }
+          void peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
         }
       });
     },
@@ -218,10 +316,13 @@ export async function startHostSession(roomId: string) {
   sessionUnsub = roomService.subscribeToSession(roomId, sessionId, async (session) => {
     if (!session?.answer || !peerConnection || peerConnection.currentRemoteDescription) return;
     await peerConnection.setRemoteDescription(new RTCSessionDescription(session.answer));
+    await flushPendingRemoteCandidates();
+    publishDebugState();
   });
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+  publishDebugState();
   await updateDoc(doc(getFirestoreInstance(), "rooms", roomId, "sessions", sessionId), {
     offer: { type: offer.type, sdp: offer.sdp },
     status: "active",
@@ -248,8 +349,10 @@ export async function joinGuestSession(roomId: string, sessionId: string) {
     if (!session?.offer || answered || !peerConnection) return;
     answered = true;
     await peerConnection.setRemoteDescription(new RTCSessionDescription(session.offer));
+    await flushPendingRemoteCandidates();
     const answer = await peerConnection.createAnswer();
     await peerConnection.setLocalDescription(answer);
+    publishDebugState();
     await updateDoc(doc(getFirestoreInstance(), "rooms", roomId, "sessions", sessionId), {
       answer: { type: answer.type, sdp: answer.sdp },
       status: "active",
@@ -291,4 +394,8 @@ export function cleanupConnection() {
   currentRole = null;
   desiredMicEnabled = false;
   cleanupPeerConnection({ preserveMic: false });
+}
+
+export function simulateNativeShareStopForQa() {
+  qaNativeStopHandler?.();
 }

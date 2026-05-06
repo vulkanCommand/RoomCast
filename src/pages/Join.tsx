@@ -71,6 +71,7 @@ export default function Join() {
               <input
                 id={`c-${i}`}
                 key={i}
+                data-testid={`join-code-${i}`}
                 value={ch}
                 onChange={(e) => setChar(i, e.target.value)}
                 onKeyDown={(e) => {
@@ -87,7 +88,7 @@ export default function Join() {
             ))}
           </div>
 
-          <Button type="submit" className="mt-8 w-full bg-gradient-primary text-primary-foreground shadow-glow">
+          <Button type="submit" className="mt-8 w-full bg-gradient-primary text-primary-foreground shadow-glow" data-testid="join-room">
             Join room <ArrowRight className="h-4 w-4" />
           </Button>
 

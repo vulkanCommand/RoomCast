@@ -5,17 +5,24 @@ import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useAuthStore } from "@/store/auth";
 import { firebaseConfigError, isFirebaseConfigured } from "@/services/firebase";
+import { canUseQaTools, enableQaMode, qaTestUsers } from "@/lib/qa";
 import { toast } from "sonner";
 
 export default function Login() {
   const nav = useNavigate();
   const [params] = useSearchParams();
-  const { isAuthed, isLoading, loginWithGoogle, error } = useAuthStore();
+  const { isAuthed, isLoading, loginWithGoogle, loginWithEmailPassword, error } = useAuthStore();
   const redirect = params.get("redirect") || "/home";
+  const qaRequested = params.get("qa") === "1";
+  const showQaAuth = canUseQaTools();
 
   useEffect(() => {
     if (isAuthed) nav(redirect, { replace: true });
   }, [isAuthed, nav, redirect]);
+
+  useEffect(() => {
+    if (qaRequested) enableQaMode();
+  }, [qaRequested]);
 
   const onGoogle = async () => {
     try {
@@ -28,6 +35,17 @@ export default function Login() {
       nav(redirect, { replace: true });
     } catch {
       toast.error("Google sign-in was cancelled or failed");
+    }
+  };
+
+  const onQaLogin = async (email: string, password: string) => {
+    try {
+      enableQaMode();
+      await loginWithEmailPassword(email, password);
+      toast.success("Signed in for local QA");
+      nav(redirect, { replace: true });
+    } catch {
+      toast.error("QA sign-in failed");
     }
   };
 
@@ -56,9 +74,41 @@ export default function Login() {
             disabled={isLoading}
             onClick={onGoogle}
             className="w-full bg-gradient-primary text-primary-foreground shadow-glow"
+            data-testid="login-google"
           >
             Continue with Google <ArrowRight className="h-4 w-4" />
           </Button>
+
+          {showQaAuth && (
+            <div className="mt-4 rounded-xl border border-border/70 bg-background/30 p-4">
+              <div className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                Local QA only
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isLoading}
+                  data-testid="qa-login-host"
+                  onClick={() => onQaLogin(qaTestUsers.host.email, qaTestUsers.host.password)}
+                >
+                  QA host
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isLoading}
+                  data-testid="qa-login-guest"
+                  onClick={() => onQaLogin(qaTestUsers.guest.email, qaTestUsers.guest.password)}
+                >
+                  QA guest
+                </Button>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Uses disposable Firebase users and fake media streams when QA mode is enabled.
+              </p>
+            </div>
+          )}
 
           <div className="mt-5 text-center text-xs text-muted-foreground">
             Google Sign-In only. RoomCast does not store passwords.
