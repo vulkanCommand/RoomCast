@@ -26,6 +26,12 @@ export interface Participant {
 export type RoomStatus = "waiting" | "connected" | "ended";
 export type SharingStatus = "stopped" | "sharing" | "reconnecting";
 
+export interface ReconnectRequest {
+  requestedByUid: UserId;
+  requestedAt: number;
+  sessionId: string;
+}
+
 export interface Room {
   id: string;
   code: string; // 6-char invite code
@@ -40,4 +46,5 @@ export interface Room {
   maxParticipants: number;
   activeSessionId?: string | null;
   sharingStatus?: SharingStatus;
+  reconnectRequest?: ReconnectRequest | null;
 }

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.cleanupExpiredRooms = exports.stopRoomSession = exports.startRoomSession = exports.endRoom = exports.joinRoom = exports.createRoom = void 0;
+exports.cleanupExpiredRooms = exports.leaveRoom = exports.requestReconnect = exports.stopRoomSession = exports.startRoomSession = exports.endRoom = exports.joinRoom = exports.createRoom = void 0;
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
 const https_1 = require("firebase-functions/v2/https");
@@ -34,6 +34,23 @@ function authProfile(request) {
         joinedAt: firestore_1.FieldValue.serverTimestamp(),
         role: uid ? "host" : "guest",
     };
+}
+async function markRoomEnded(roomRef, room) {
+    const activeSessionId = typeof room.activeSessionId === "string" ? room.activeSessionId : null;
+    const update = {
+        status: "ended",
+        sharingStatus: "stopped",
+        activeSessionId: null,
+        reconnectRequest: null,
+        endedAt: firestore_1.FieldValue.serverTimestamp(),
+    };
+    await roomRef.update(update);
+    if (activeSessionId) {
+        await roomRef.collection("sessions").doc(activeSessionId).set({
+            status: "stopped",
+            stoppedAt: firestore_1.FieldValue.serverTimestamp(),
+        }, { merge: true });
+    }
 }
 async function uniqueRoomCode() {
     for (let i = 0; i < 8; i += 1) {
@@ -104,6 +121,7 @@ exports.joinRoom = (0, https_1.onCall)(async (request) => {
             [`participants.${uid}`]: true,
             [`participantProfiles.${uid}`]: guestProfile,
             status: "connected",
+            reconnectRequest: null,
             startedAt: room.startedAt || firestore_1.FieldValue.serverTimestamp(),
         });
     });
@@ -116,27 +134,13 @@ exports.endRoom = (0, https_1.onCall)(async (request) => {
     if (!roomId)
         throw new https_1.HttpsError("invalid-argument", "roomId is required.");
     const roomRef = db.collection("rooms").doc(roomId);
-    await db.runTransaction(async (tx) => {
-        const snap = await tx.get(roomRef);
-        if (!snap.exists)
-            throw new https_1.HttpsError("not-found", "Room not found.");
-        const room = snap.data() || {};
-        if (room.hostUid !== uid)
-            throw new https_1.HttpsError("permission-denied", "Only the host can end this room.");
-        const activeSessionId = typeof room.activeSessionId === "string" ? room.activeSessionId : null;
-        tx.update(roomRef, {
-            status: "ended",
-            sharingStatus: "stopped",
-            activeSessionId: null,
-            endedAt: firestore_1.FieldValue.serverTimestamp(),
-        });
-        if (activeSessionId) {
-            tx.set(roomRef.collection("sessions").doc(activeSessionId), {
-                status: "stopped",
-                stoppedAt: firestore_1.FieldValue.serverTimestamp(),
-            }, { merge: true });
-        }
-    });
+    const snap = await roomRef.get();
+    if (!snap.exists)
+        throw new https_1.HttpsError("not-found", "Room not found.");
+    const room = snap.data() || {};
+    if (room.hostUid !== uid)
+        throw new https_1.HttpsError("permission-denied", "Only the host can end this room.");
+    await markRoomEnded(roomRef, room);
     return { ok: true };
 });
 exports.startRoomSession = (0, https_1.onCall)(async (request) => {
@@ -174,6 +178,7 @@ exports.startRoomSession = (0, https_1.onCall)(async (request) => {
         tx.update(roomRef, {
             activeSessionId: sessionRef.id,
             sharingStatus: "sharing",
+            reconnectRequest: null,
             updatedAt: firestore_1.FieldValue.serverTimestamp(),
         });
     });
@@ -196,6 +201,7 @@ exports.stopRoomSession = (0, https_1.onCall)(async (request) => {
         tx.update(roomRef, {
             activeSessionId: null,
             sharingStatus: "stopped",
+            reconnectRequest: null,
             updatedAt: firestore_1.FieldValue.serverTimestamp(),
         });
         if (activeSessionId) {
@@ -207,10 +213,77 @@ exports.stopRoomSession = (0, https_1.onCall)(async (request) => {
     });
     return { ok: true };
 });
+exports.requestReconnect = (0, https_1.onCall)(async (request) => {
+    const uid = requireUid(request.auth?.uid);
+    const roomId = String(request.data?.roomId || "");
+    const sessionId = String(request.data?.sessionId || "");
+    if (!roomId || !sessionId)
+        throw new https_1.HttpsError("invalid-argument", "roomId and sessionId are required.");
+    const roomRef = db.collection("rooms").doc(roomId);
+    await db.runTransaction(async (tx) => {
+        const snap = await tx.get(roomRef);
+        if (!snap.exists)
+            throw new https_1.HttpsError("not-found", "Room not found.");
+        const room = snap.data() || {};
+        if (room.guestUid !== uid)
+            throw new https_1.HttpsError("permission-denied", "Only the guest can request reconnect.");
+        if (room.status === "ended")
+            throw new https_1.HttpsError("failed-precondition", "This room has ended.");
+        if (room.activeSessionId !== sessionId)
+            return;
+        tx.update(roomRef, {
+            sharingStatus: "reconnecting",
+            reconnectRequest: {
+                requestedByUid: uid,
+                requestedAt: firestore_1.FieldValue.serverTimestamp(),
+                sessionId,
+            },
+            updatedAt: firestore_1.FieldValue.serverTimestamp(),
+        });
+    });
+    return { ok: true };
+});
+exports.leaveRoom = (0, https_1.onCall)(async (request) => {
+    const uid = requireUid(request.auth?.uid);
+    const roomId = String(request.data?.roomId || "");
+    if (!roomId)
+        throw new https_1.HttpsError("invalid-argument", "roomId is required.");
+    const roomRef = db.collection("rooms").doc(roomId);
+    const snap = await roomRef.get();
+    if (!snap.exists)
+        throw new https_1.HttpsError("not-found", "Room not found.");
+    const room = snap.data() || {};
+    if (room.hostUid === uid) {
+        await markRoomEnded(roomRef, room);
+        return { ok: true, ended: true };
+    }
+    if (room.guestUid !== uid) {
+        throw new https_1.HttpsError("permission-denied", "Only room participants can leave this room.");
+    }
+    const activeSessionId = typeof room.activeSessionId === "string" ? room.activeSessionId : null;
+    const update = {
+        guestUid: null,
+        status: "waiting",
+        sharingStatus: "stopped",
+        activeSessionId: null,
+        updatedAt: firestore_1.FieldValue.serverTimestamp(),
+        [`participants.${uid}`]: firestore_1.FieldValue.delete(),
+        [`participantProfiles.${uid}`]: firestore_1.FieldValue.delete(),
+    };
+    if (room.reconnectRequest?.requestedByUid === uid) {
+        update.reconnectRequest = null;
+    }
+    await roomRef.update(update);
+    if (activeSessionId) {
+        await roomRef.collection("sessions").doc(activeSessionId).set({
+            status: "stopped",
+            stoppedAt: firestore_1.FieldValue.serverTimestamp(),
+        }, { merge: true });
+    }
+    return { ok: true, ended: false };
+});
 exports.cleanupExpiredRooms = (0, scheduler_1.onSchedule)("every 24 hours", async () => {
     const expired = await db.collection("rooms").where("expiresAt", "<=", firestore_1.Timestamp.now()).limit(100).get();
-    const batch = db.batch();
-    expired.docs.forEach((doc) => batch.delete(doc.ref));
-    await batch.commit();
+    await Promise.all(expired.docs.map((roomDoc) => db.recursiveDelete(roomDoc.ref)));
 });
 //# sourceMappingURL=index.js.map

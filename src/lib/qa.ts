@@ -2,17 +2,21 @@ export const QA_MODE_STORAGE_KEY = "roomcast.qaMode";
 
 export const qaTestUsers = {
   host: {
-    email: "qa-host-roomcast@example.com",
-    password: "RoomCastQA#2026",
+    email: import.meta.env.VITE_QA_HOST_EMAIL?.trim() || "",
+    password: import.meta.env.VITE_QA_HOST_PASSWORD?.trim() || "",
   },
   guest: {
-    email: "qa-guest-roomcast@example.com",
-    password: "RoomCastQA#2026",
+    email: import.meta.env.VITE_QA_GUEST_EMAIL?.trim() || "",
+    password: import.meta.env.VITE_QA_GUEST_PASSWORD?.trim() || "",
   },
 } as const;
 
 export function canUseQaTools() {
-  return import.meta.env.DEV;
+  return (
+    import.meta.env.DEV &&
+    import.meta.env.VITE_ENABLE_QA_TOOLS === "true" &&
+    Boolean(qaTestUsers.host.email && qaTestUsers.host.password && qaTestUsers.guest.email && qaTestUsers.guest.password)
+  );
 }
 
 export function enableQaMode() {

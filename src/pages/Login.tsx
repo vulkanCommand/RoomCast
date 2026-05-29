@@ -105,7 +105,7 @@ export default function Login() {
                 </Button>
               </div>
               <p className="mt-3 text-xs text-muted-foreground">
-                Uses disposable Firebase users and fake media streams when QA mode is enabled.
+                Uses local env-provided QA users and fake media streams when QA mode is enabled.
               </p>
             </div>
           )}

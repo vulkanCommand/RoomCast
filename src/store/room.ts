@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Participant, Room, User } from "@/types";
 import { hueFromString, initialsFrom } from "@/lib/roomcast";
+import { deriveConnectionStatus, isParticipantSharing, isRoomSharing } from "@/lib/roomState";
 import * as roomService from "@/services/roomService";
 import * as webrtcService from "@/services/webrtcService";
 import type { Unsubscribe } from "firebase/firestore";
@@ -10,7 +11,7 @@ interface RoomState {
   room: Room | null;
   participants: Participant[];
   currentRole: "host" | "guest" | null;
-  connectionStatus: "idle" | "waiting" | "connecting" | "connected" | "ended" | "error";
+  connectionStatus: "idle" | "waiting" | "connecting" | "connected" | "reconnecting" | "ended" | "error";
   sharingUserId: string | null;
   activeSessionId: string | null;
   roomCode: string | null;
@@ -20,9 +21,9 @@ interface RoomState {
   joinRoomByCode: (code: string, user: User) => Promise<Room | null>;
   joinRoom: (roomIdOrCode: string, user: User) => Promise<Room | null>;
   subscribeToRoom: (roomId: string, currentUser: User) => Unsubscribe;
-  leaveRoom: (userId: string) => void;
+  leaveRoom: (userId: string) => Promise<{ ended?: boolean } | void>;
   endRoom: () => Promise<void>;
-  startSharing: (userId: string) => Promise<void>;
+  startSharing: (userId: string, options?: { reuseScreen?: boolean }) => Promise<{ micWarning?: string } | void>;
   stopSharing: () => Promise<void>;
   setSpeaking: (userId: string, speaking: boolean) => void;
   setMuted: (userId: string, muted: boolean) => void;
@@ -40,7 +41,7 @@ function participantFor(id: string, role: "host" | "guest", currentUser: User, r
     initials: initialsFrom(displayName),
     avatarColor: isMe ? currentUser.avatarColor : hueFromString(id),
     role,
-    isSharing: room.hostId === id && room.status === "connected",
+    isSharing: isParticipantSharing(room, id),
     isSpeaking: false,
     isMuted: !isMe,
     joinedAt: Date.now(),
@@ -128,24 +129,27 @@ export const useRoomStore = create<RoomState>((set, get) => ({
           return previous ? { ...next, isSpeaking: previous.isSpeaking, isMuted: previous.isMuted } : next;
         }),
         currentRole,
-        connectionStatus:
-          snapshot.status === "ended"
-            ? "ended"
-            : snapshot.activeSessionId
-              ? "connected"
-              : snapshot.status,
-        sharingUserId: snapshot.activeSessionId && snapshot.status !== "ended" ? snapshot.hostId : null,
+        connectionStatus: deriveConnectionStatus(snapshot),
+        sharingUserId: isRoomSharing(snapshot) && snapshot.status !== "ended" ? snapshot.hostId : null,
         activeSessionId: snapshot.activeSessionId || null,
         roomCode: snapshot.code,
       }));
     }),
 
-  leaveRoom: (userId) =>
+  leaveRoom: async (userId) => {
+    const roomId = get().room?.id;
+    if (!roomId) return;
+    const result = await roomService.leaveRoom(roomId);
+    webrtcService.cleanupConnection();
     set((s) => ({
+      room: result.ended && s.room ? { ...s.room, status: "ended", endedAt: Date.now() } : s.room,
       participants: s.participants.filter((p) => p.id !== userId),
-      sharingUserId: s.sharingUserId === userId ? null : s.sharingUserId,
-      activeSessionId: s.activeSessionId,
-    })),
+      sharingUserId: null,
+      activeSessionId: null,
+      connectionStatus: result.ended ? "ended" : "waiting",
+    }));
+    return result;
+  },
 
   endRoom: async () => {
     const roomId = get().room?.id;
@@ -158,16 +162,26 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     );
   },
 
-  startSharing: async (userId) => {
+  startSharing: async (userId, options) => {
     const roomId = get().room?.id;
     if (!roomId) return;
-    const { sessionId } = await webrtcService.startHostSession(roomId);
+    const { sessionId, micWarning } = await webrtcService.startHostSession(roomId, options);
     set((s) => ({
       sharingUserId: userId,
       activeSessionId: sessionId,
-      room: s.room ? { ...s.room, status: "connected", startedAt: s.room.startedAt ?? Date.now() } : s.room,
+      room: s.room
+        ? {
+            ...s.room,
+            status: "connected",
+            startedAt: s.room.startedAt ?? Date.now(),
+            activeSessionId: sessionId,
+            sharingStatus: "sharing",
+            reconnectRequest: null,
+          }
+        : s.room,
       participants: s.participants.map((p) => ({ ...p, isSharing: p.id === userId })),
     }));
+    return { micWarning };
   },
 
   stopSharing: async () => {
@@ -177,6 +191,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     set((s) => ({
       sharingUserId: null,
       activeSessionId: null,
+      room: s.room ? { ...s.room, activeSessionId: null, sharingStatus: "stopped", reconnectRequest: null } : s.room,
       participants: s.participants.map((p) => ({ ...p, isSharing: false })),
     }));
   },

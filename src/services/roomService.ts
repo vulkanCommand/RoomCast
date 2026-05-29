@@ -1,7 +1,7 @@
 import { httpsCallable } from "firebase/functions";
 import { doc, onSnapshot, type DocumentData } from "firebase/firestore";
 import { getFirestoreInstance, getFunctionsInstance } from "@/services/firebase";
-import type { Room, SharingStatus } from "@/types";
+import type { ReconnectRequest, Room, SharingStatus } from "@/types";
 
 export interface RoomSnapshot extends Room {
   participantsMap: Record<string, boolean>;
@@ -24,6 +24,16 @@ function toMillis(value: unknown): number {
   return Date.now();
 }
 
+function mapReconnectRequest(value: DocumentData | null | undefined): ReconnectRequest | null {
+  if (!value || typeof value !== "object") return null;
+  if (typeof value.requestedByUid !== "string" || typeof value.sessionId !== "string") return null;
+  return {
+    requestedByUid: value.requestedByUid,
+    requestedAt: toMillis(value.requestedAt),
+    sessionId: value.sessionId,
+  };
+}
+
 export function mapRoomDoc(data: DocumentData, id: string): RoomSnapshot {
   return {
     id,
@@ -41,6 +51,7 @@ export function mapRoomDoc(data: DocumentData, id: string): RoomSnapshot {
     participantProfiles: data.participantProfiles || {},
     activeSessionId: data.activeSessionId || null,
     sharingStatus: (data.sharingStatus as SharingStatus | undefined) || "stopped",
+    reconnectRequest: mapReconnectRequest(data.reconnectRequest),
   };
 }
 
@@ -77,6 +88,16 @@ export async function startRoomSession(roomId: string) {
 export async function stopRoomSession(roomId: string) {
   const fn = httpsCallable<{ roomId: string }, { ok: boolean }>(getFunctionsInstance(), "stopRoomSession");
   return (await fn({ roomId })).data;
+}
+
+export async function leaveRoom(roomId: string) {
+  const fn = httpsCallable<{ roomId: string }, { ok: boolean; ended?: boolean }>(getFunctionsInstance(), "leaveRoom");
+  return (await fn({ roomId })).data;
+}
+
+export async function requestReconnect(roomId: string, sessionId: string) {
+  const fn = httpsCallable<{ roomId: string; sessionId: string }, { ok: boolean }>(getFunctionsInstance(), "requestReconnect");
+  return (await fn({ roomId, sessionId })).data;
 }
 
 export function subscribeToRoom(roomId: string, callback: (room: RoomSnapshot | null) => void) {

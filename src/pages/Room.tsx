@@ -24,12 +24,13 @@ import { useAuthStore } from "@/store/auth";
 import { useRoomStore } from "@/store/room";
 import { useVoiceStore } from "@/store/voice";
 import { cn } from "@/lib/utils";
-import { shouldBlockRoomSpaceKey, shouldHandlePushToTalkKey } from "@/lib/keyboard";
+import { shouldBlockRoomSpaceKey } from "@/lib/keyboard";
 import { voiceModeLabel } from "@/lib/voice";
 import { formatDuration } from "@/lib/roomcast";
 import { isQaMode } from "@/lib/qa";
 import { toast } from "sonner";
 import * as webrtcService from "@/services/webrtcService";
+import * as roomService from "@/services/roomService";
 
 type SidePanel = "people" | "voice" | "settings" | null;
 
@@ -70,7 +71,8 @@ export default function Room() {
   const [isStartingShare, setIsStartingShare] = useState(false);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
-  const recoveredHostSessionRef = useRef<string | null>(null);
+  const reconnectRequestRef = useRef<string | null>(null);
+  const hostReconnectSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!roomId || !user) return;
@@ -111,7 +113,10 @@ export default function Room() {
   useEffect(() => {
     if (!room?.id || currentRole !== "guest" || !activeSessionId) return;
     void webrtcService.joinGuestSession(room.id, activeSessionId)
-      .then(() => setMicPermission(true))
+      .then((result) => {
+        if (!result.micWarning) setMicPermission(true);
+        if (result.micWarning) toast.warning(result.micWarning);
+      })
       .catch(() => {
         toast.error("Could not connect to the host stream.");
       });
@@ -124,20 +129,68 @@ export default function Room() {
   }, [activeSessionId]);
 
   useEffect(() => {
+    if (room?.status !== "ended" || !room.id) return;
+    webrtcService.cleanupConnection();
+    nav(`/ended?room=${room.id}`, { replace: true });
+  }, [nav, room?.id, room?.status]);
+
+  useEffect(() => {
+    if (currentRole !== "guest" || !room?.id || !activeSessionId || room.sharingStatus !== "sharing") {
+      reconnectRequestRef.current = null;
+      return;
+    }
+    const reconnectKey = `${room.id}:${activeSessionId}`;
+    const timeout = window.setTimeout(() => {
+      if (webrtcService.hasRemoteVideoTrack()) return;
+      if (room.reconnectRequest?.requestedByUid === user.id && room.reconnectRequest?.sessionId === activeSessionId) {
+        reconnectRequestRef.current = reconnectKey;
+        return;
+      }
+      if (reconnectRequestRef.current === reconnectKey) return;
+      reconnectRequestRef.current = reconnectKey;
+      void roomService.requestReconnect(room.id, activeSessionId).catch((error) => {
+        reconnectRequestRef.current = null;
+        console.error("Reconnect request failed", error);
+      });
+    }, 4500);
+
+    return () => window.clearTimeout(timeout);
+  }, [activeSessionId, currentRole, room?.id, room?.reconnectRequest, room?.sharingStatus, user.id]);
+
+  useEffect(() => {
+    if (!room?.reconnectRequest) {
+      hostReconnectSessionRef.current = null;
+    }
+  }, [room?.reconnectRequest]);
+
+  useEffect(() => {
     if (
       currentRole !== "host" ||
       !room?.id ||
-      !activeSessionId ||
-      localStream ||
-      isStartingShare ||
-      recoveredHostSessionRef.current === activeSessionId
+      !room.reconnectRequest ||
+      !webrtcService.hasLocalScreenShare() ||
+      isStartingShare
     ) {
       return;
     }
-    recoveredHostSessionRef.current = activeSessionId;
-    void stopSharing();
-    toast.info("Recovered room state. Start screen sharing again when you're ready.");
-  }, [activeSessionId, currentRole, isStartingShare, localStream, room?.id, stopSharing]);
+    const reconnectSessionId = room.reconnectRequest.sessionId;
+    if (hostReconnectSessionRef.current === reconnectSessionId) return;
+    hostReconnectSessionRef.current = reconnectSessionId;
+    void (async () => {
+      try {
+        setIsStartingShare(true);
+        const result = await startSharing(user.id, { reuseScreen: true });
+        if (result?.micWarning) toast.warning(result.micWarning);
+        toast.info("Guest reconnected. Refreshing the live session.");
+      } catch (error) {
+        hostReconnectSessionRef.current = null;
+        console.error("Reconnect restart failed", error);
+        toast.error("Could not refresh the session for the rejoining guest.");
+      } finally {
+        setIsStartingShare(false);
+      }
+    })();
+  }, [currentRole, isStartingShare, room?.id, room?.reconnectRequest, startSharing, user.id]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -173,13 +226,16 @@ export default function Room() {
   }, [localStream, remoteStream, sharingUserId, user.id]);
 
   useEffect(() => {
-    if (!remoteAudioRef.current || !remoteStream) return;
-    remoteAudioRef.current.srcObject = remoteStream;
+    if (!remoteAudioRef.current) return;
+    const shouldAttachAudioOnly = Boolean(remoteStream && remoteStream.getAudioTracks().length && !remoteStream.getVideoTracks().length);
+    remoteAudioRef.current.srcObject = shouldAttachAudioOnly ? remoteStream : null;
   }, [remoteStream]);
 
   useEffect(() => {
     const ducked = isTalking || participants.some((p) => p.id !== user.id && p.isSpeaking);
-    if (screenVideoRef.current) screenVideoRef.current.volume = ducked ? 0.25 : shareVolume;
+    const volume = ducked ? 0.25 : shareVolume;
+    if (screenVideoRef.current) screenVideoRef.current.volume = volume;
+    if (remoteAudioRef.current) remoteAudioRef.current.volume = volume;
   }, [isTalking, participants, shareVolume, user.id]);
 
   useEffect(() => {
@@ -193,6 +249,7 @@ export default function Room() {
   const isHost = currentRole === "host" || me?.role === "host";
   const screenStream = sharingUserId === user.id ? localStream : remoteStream;
   const hasScreenVideo = Boolean(screenStream?.getVideoTracks().length);
+  const hasRemoteAudioOnly = Boolean(remoteStream?.getAudioTracks().length && !remoteStream.getVideoTracks().length);
   const isViewingOwnShare = sharingUserId === user.id;
   const shouldDuck = isTalking || participants.some((p) => p.id !== user.id && p.isSpeaking);
   const qaMode = isQaMode();
@@ -224,15 +281,16 @@ export default function Room() {
     }
     try {
       setIsStartingShare(true);
-      if (!hasMicPermission) {
-        await webrtcService.ensureMicrophoneAccess();
+      const result = await startSharing(user.id);
+      if (result?.micWarning) {
+        toast.warning(result.micWarning);
+      } else if (!hasMicPermission) {
         setMicPermission(true);
       }
-      await startSharing(user.id);
       toast.success("Sharing your screen");
     } catch (error) {
       console.error("Start sharing failed", error);
-      toast.error("Screen sharing did not start. Check screen and microphone permissions.");
+      toast.error("Screen sharing did not start. Check screen permissions and try again.");
     } finally {
       setIsStartingShare(false);
     }
@@ -242,11 +300,18 @@ export default function Room() {
     void stopSharing();
   };
 
-  const onLeave = () => {
-    leaveRoom(user.id);
-    webrtcService.cleanupConnection();
-    if (isHost) void endRoom();
-    nav(`/ended?room=${room.id}`);
+  const onLeave = async () => {
+    try {
+      const result = await leaveRoom(user.id);
+      if (result?.ended) {
+        nav(`/ended?room=${room.id}`, { replace: true });
+        return;
+      }
+      nav("/home", { replace: true });
+    } catch (error) {
+      console.error("Leave room failed", error);
+      toast.error("Could not leave the room cleanly.");
+    }
   };
 
   const onEnd = async () => {
@@ -291,7 +356,7 @@ export default function Room() {
           <IconBtn active={panel === "settings"} onClick={() => setPanel(panel === "settings" ? null : "settings")} label="Settings">
             <Settings2 className="h-4 w-4" />
           </IconBtn>
-          <Button variant="ghost" size="sm" className="ml-2 text-muted-foreground hover:text-destructive" onClick={onLeave}>
+          <Button variant="ghost" size="sm" className="ml-2 text-muted-foreground hover:text-destructive" onClick={() => void onLeave()}>
             <LogOut className="h-4 w-4" /> Leave
           </Button>
           {isHost && (
@@ -313,7 +378,7 @@ export default function Room() {
               ) : (
                 <EmptyStage canShare={isHost} onShare={onShare} />
               )}
-              <audio ref={remoteAudioRef} autoPlay playsInline />
+              {hasRemoteAudioOnly && <audio ref={remoteAudioRef} autoPlay playsInline />}
 
               <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-2">
                 {sharer && (
