@@ -25,6 +25,13 @@ import { useRoomStore } from "@/store/room";
 import { useVoiceStore } from "@/store/voice";
 import { cn } from "@/lib/utils";
 import { shouldBlockRoomSpaceKey } from "@/lib/keyboard";
+import { buildRoomInviteUrl } from "@/lib/links";
+import {
+  deriveGuestDisplayConnectionStatus,
+  deriveRoomStageState,
+  shouldRequestPlaybackReconnect,
+  type GuestPlaybackState,
+} from "@/lib/playbackHealth";
 import { voiceModeLabel } from "@/lib/voice";
 import { formatDuration } from "@/lib/roomcast";
 import { isQaMode } from "@/lib/qa";
@@ -60,7 +67,6 @@ export default function Room() {
     setMicMode,
     hasMicPermission,
     setMicPermission,
-    actualMicEnabled,
     startTalking,
     stopTalking,
   } = useVoiceStore();
@@ -69,10 +75,16 @@ export default function Room() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isStartingShare, setIsStartingShare] = useState(false);
+  const [playbackBlocked, setPlaybackBlocked] = useState(false);
+  const [guestPlaybackState, setGuestPlaybackState] = useState<GuestPlaybackState>("idle");
+  const [peerConnectionState, setPeerConnectionState] = useState<RTCPeerConnectionState | "unknown">("unknown");
+  const [iceConnectionState, setIceConnectionState] = useState<RTCIceConnectionState | "unknown">("unknown");
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const reconnectRequestRef = useRef<string | null>(null);
   const hostReconnectSessionRef = useRef<string | null>(null);
+  const previousParticipantCountRef = useRef(0);
+  const guestSessionStartedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!roomId || !user) return;
@@ -84,9 +96,10 @@ export default function Room() {
         if (cancelled || !joined) return;
         roomUnsub = subscribeToRoom(joined.id, user);
       })
-      .catch(() => {
-        toast.error("Could not open this room.");
-        nav("/home", { replace: true });
+      .catch((error) => {
+        console.error("Could not open room", error);
+        toast.error(roomService.describeRoomError(error));
+        nav(`/ended?room=${roomId}&reason=unavailable`, { replace: true });
       });
 
     const localUnsub = webrtcService.onLocalStream(setLocalStream);
@@ -99,6 +112,10 @@ export default function Room() {
       void stopSharing();
       toast.info("Screen sharing stopped. You can start sharing again.");
     });
+    const peerStateUnsub = webrtcService.onConnectionStateChange((state, iceState) => {
+      setPeerConnectionState(state);
+      setIceConnectionState(iceState);
+    });
 
     return () => {
       cancelled = true;
@@ -107,6 +124,7 @@ export default function Room() {
       remoteUnsub();
       speakingUnsub();
       endedUnsub();
+      peerStateUnsub();
     };
   }, [joinRoom, nav, roomId, stopSharing, subscribeToRoom, user]);
 
@@ -129,19 +147,76 @@ export default function Room() {
   }, [activeSessionId]);
 
   useEffect(() => {
+    if (room?.status === "ended" || !activeSessionId || sharingUserId === user.id) {
+      setGuestPlaybackState("idle");
+      setPlaybackBlocked(false);
+      guestSessionStartedAtRef.current = null;
+      return;
+    }
+
+    setGuestPlaybackState("joining");
+    setPlaybackBlocked(false);
+    guestSessionStartedAtRef.current = Date.now();
+  }, [activeSessionId, remoteStream, room?.status, sharingUserId, user.id]);
+
+  useEffect(() => {
     if (room?.status !== "ended" || !room.id) return;
     webrtcService.cleanupConnection();
     nav(`/ended?room=${room.id}`, { replace: true });
   }, [nav, room?.id, room?.status]);
 
   useEffect(() => {
-    if (currentRole !== "guest" || !room?.id || !activeSessionId || room.sharingStatus !== "sharing") {
+    const sessionAgeMs =
+      guestSessionStartedAtRef.current && activeSessionId && sharingUserId !== user.id
+        ? Date.now() - guestSessionStartedAtRef.current
+        : 0;
+
+    const reconnectContext = {
+      currentRole,
+      activeSessionId: activeSessionId || null,
+      sharingStatus: room?.sharingStatus,
+      guestPlaybackState,
+      playbackBlocked,
+      connectionState: peerConnectionState,
+      iceConnectionState,
+      sessionAgeMs,
+      requestedByUid: room?.reconnectRequest?.requestedByUid || null,
+      requestSessionId: room?.reconnectRequest?.sessionId || null,
+      userId: user.id,
+    } as const;
+
+    const needsTimedRecheck =
+      currentRole === "guest" &&
+      Boolean(activeSessionId) &&
+      room?.sharingStatus === "sharing" &&
+      guestPlaybackState !== "ready" &&
+      !playbackBlocked &&
+      peerConnectionState !== "failed" &&
+      iceConnectionState !== "failed" &&
+      peerConnectionState !== "disconnected" &&
+      iceConnectionState !== "disconnected";
+
+    if (!needsTimedRecheck && !shouldRequestPlaybackReconnect(reconnectContext)) {
       reconnectRequestRef.current = null;
       return;
     }
+
     const reconnectKey = `${room.id}:${activeSessionId}`;
+    const waitMs = shouldRequestPlaybackReconnect(reconnectContext)
+      ? 0
+      : Math.max(12000 - sessionAgeMs, 1000);
+
     const timeout = window.setTimeout(() => {
-      if (webrtcService.hasRemoteVideoTrack()) return;
+      const latestSessionAgeMs =
+        guestSessionStartedAtRef.current && activeSessionId && sharingUserId !== user.id
+          ? Date.now() - guestSessionStartedAtRef.current
+          : 0;
+      if (!shouldRequestPlaybackReconnect({
+        ...reconnectContext,
+        sessionAgeMs: latestSessionAgeMs,
+      })) {
+        return;
+      }
       if (room.reconnectRequest?.requestedByUid === user.id && room.reconnectRequest?.sessionId === activeSessionId) {
         reconnectRequestRef.current = reconnectKey;
         return;
@@ -152,16 +227,47 @@ export default function Room() {
         reconnectRequestRef.current = null;
         console.error("Reconnect request failed", error);
       });
-    }, 4500);
+    }, waitMs);
 
     return () => window.clearTimeout(timeout);
-  }, [activeSessionId, currentRole, room?.id, room?.reconnectRequest, room?.sharingStatus, user.id]);
+  }, [
+    activeSessionId,
+    currentRole,
+    guestPlaybackState,
+    iceConnectionState,
+    playbackBlocked,
+    peerConnectionState,
+    room?.id,
+    room?.reconnectRequest,
+    room?.sharingStatus,
+    sharingUserId,
+    user.id,
+  ]);
 
   useEffect(() => {
     if (!room?.reconnectRequest) {
       hostReconnectSessionRef.current = null;
     }
   }, [room?.reconnectRequest]);
+
+  useEffect(() => {
+    const previousCount = previousParticipantCountRef.current;
+    previousParticipantCountRef.current = participants.length;
+
+    if (
+      currentRole !== "host" ||
+      !room?.id ||
+      !localStream ||
+      sharingUserId !== user.id ||
+      previousCount <= 1 ||
+      participants.length > 1
+    ) {
+      return;
+    }
+
+    toast.info("Guest left the room. Stopping screen share.");
+    void stopSharing();
+  }, [currentRole, localStream, participants.length, room?.id, sharingUserId, stopSharing, user.id]);
 
   useEffect(() => {
     if (
@@ -221,15 +327,119 @@ export default function Room() {
 
   useEffect(() => {
     const stream = sharingUserId === user.id ? localStream : remoteStream;
-    if (!screenVideoRef.current) return;
-    screenVideoRef.current.srcObject = stream;
+    const video = screenVideoRef.current;
+    if (!video) return;
+
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+    }
+
+    if (!stream) {
+      setPlaybackBlocked(false);
+      if (sharingUserId !== user.id) setGuestPlaybackState("idle");
+      return;
+    }
+
+    const tryPlay = async () => {
+      try {
+        await video.play();
+        setPlaybackBlocked(false);
+        if (sharingUserId !== user.id) setGuestPlaybackState("ready");
+      } catch (error) {
+        console.warn("Video playback was blocked or delayed.", error);
+        setPlaybackBlocked(true);
+        if (sharingUserId !== user.id && webrtcService.hasRemoteVideoTrack()) {
+          setGuestPlaybackState((current) => (current === "ready" ? "stalled" : current));
+        }
+      }
+    };
+
+    const markReady = () => {
+      if (sharingUserId !== user.id) setGuestPlaybackState("ready");
+      setPlaybackBlocked(false);
+    };
+
+    const markWaiting = () => {
+      if (sharingUserId !== user.id) {
+        setGuestPlaybackState((current) => (current === "ready" ? "stalled" : current));
+      }
+    };
+
+    const handleCanPlay = () => {
+      void tryPlay();
+    };
+
+    const remoteVideoTrack = sharingUserId !== user.id ? stream.getVideoTracks()[0] : null;
+    const handleTrackMute = () => markWaiting();
+    const handleTrackUnmute = () => markReady();
+    const handleTrackEnded = () => setGuestPlaybackState("stalled");
+
+    video.addEventListener("loadedmetadata", handleCanPlay);
+    video.addEventListener("canplay", handleCanPlay);
+    video.addEventListener("loadeddata", markReady);
+    video.addEventListener("playing", markReady);
+    video.addEventListener("waiting", markWaiting);
+    video.addEventListener("stalled", markWaiting);
+    video.addEventListener("emptied", markWaiting);
+    remoteVideoTrack?.addEventListener("mute", handleTrackMute);
+    remoteVideoTrack?.addEventListener("unmute", handleTrackUnmute);
+    remoteVideoTrack?.addEventListener("ended", handleTrackEnded);
+    void tryPlay();
+
+    return () => {
+      video.removeEventListener("loadedmetadata", handleCanPlay);
+      video.removeEventListener("canplay", handleCanPlay);
+      video.removeEventListener("loadeddata", markReady);
+      video.removeEventListener("playing", markReady);
+      video.removeEventListener("waiting", markWaiting);
+      video.removeEventListener("stalled", markWaiting);
+      video.removeEventListener("emptied", markWaiting);
+      remoteVideoTrack?.removeEventListener("mute", handleTrackMute);
+      remoteVideoTrack?.removeEventListener("unmute", handleTrackUnmute);
+      remoteVideoTrack?.removeEventListener("ended", handleTrackEnded);
+    };
   }, [localStream, remoteStream, sharingUserId, user.id]);
 
   useEffect(() => {
-    if (!remoteAudioRef.current) return;
+    const audio = remoteAudioRef.current;
+    if (!audio) return;
     const shouldAttachAudioOnly = Boolean(remoteStream && remoteStream.getAudioTracks().length && !remoteStream.getVideoTracks().length);
-    remoteAudioRef.current.srcObject = shouldAttachAudioOnly ? remoteStream : null;
-  }, [remoteStream]);
+    audio.srcObject = shouldAttachAudioOnly ? remoteStream : null;
+    if (!shouldAttachAudioOnly) {
+      setPlaybackBlocked(false);
+      if (activeSessionId && sharingUserId !== user.id) {
+        setGuestPlaybackState((current) => (current === "idle" ? "joining" : current));
+      }
+      return;
+    }
+    void audio.play().catch((error) => {
+      console.warn("Audio-only playback was blocked or delayed.", error);
+      setPlaybackBlocked(true);
+    });
+  }, [activeSessionId, remoteStream, sharingUserId, user.id]);
+
+  useEffect(() => {
+    if (!playbackBlocked) return;
+
+    const retryPlayback = () => {
+      const media = screenVideoRef.current ?? remoteAudioRef.current;
+      if (!media) return;
+      void media.play()
+        .then(() => {
+          setPlaybackBlocked(false);
+        })
+        .catch((error) => {
+          console.warn("Playback retry failed.", error);
+        });
+    };
+
+    document.addEventListener("pointerdown", retryPlayback, { capture: true });
+    document.addEventListener("keydown", retryPlayback, { capture: true });
+    return () => {
+      document.removeEventListener("pointerdown", retryPlayback, { capture: true });
+      document.removeEventListener("keydown", retryPlayback, { capture: true });
+    };
+  }, [playbackBlocked]);
 
   useEffect(() => {
     const ducked = isTalking || participants.some((p) => p.id !== user.id && p.isSpeaking);
@@ -248,11 +458,25 @@ export default function Room() {
   const sharer = useMemo(() => participants.find((p) => p.id === sharingUserId), [participants, sharingUserId]);
   const isHost = currentRole === "host" || me?.role === "host";
   const screenStream = sharingUserId === user.id ? localStream : remoteStream;
-  const hasScreenVideo = Boolean(screenStream?.getVideoTracks().length);
+  const hasScreenVideoTrack = Boolean(screenStream?.getVideoTracks().length);
   const hasRemoteAudioOnly = Boolean(remoteStream?.getAudioTracks().length && !remoteStream.getVideoTracks().length);
   const isViewingOwnShare = sharingUserId === user.id;
   const shouldDuck = isTalking || participants.some((p) => p.id !== user.id && p.isSpeaking);
   const qaMode = isQaMode();
+  const stageState = deriveRoomStageState({
+    isViewingOwnShare,
+    hasVideoTrack: hasScreenVideoTrack,
+    hasSharer: Boolean(sharer),
+    activeSessionId: activeSessionId || null,
+    guestPlaybackState,
+  });
+  const displayConnectionStatus = deriveGuestDisplayConnectionStatus({
+    isViewingOwnShare,
+    activeSessionId: activeSessionId || null,
+    roomConnectionStatus: connectionStatus,
+    guestPlaybackState,
+    playbackBlocked,
+  });
 
   if (!room || !user) return null;
 
@@ -267,7 +491,9 @@ export default function Room() {
 
   const onCopyInvite = async () => {
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      await navigator.clipboard.writeText(
+        buildRoomInviteUrl(room.id, { baseUrl: import.meta.env.VITE_BASE_URL }),
+      );
       toast.success("Invite link copied");
     } catch {
       toast.error("Could not copy invite link");
@@ -371,14 +597,38 @@ export default function Room() {
         <main className="relative flex min-w-0 flex-1 flex-col">
           <div className="relative flex flex-1 items-center justify-center overflow-hidden p-4">
             <div className="relative h-full w-full overflow-hidden rounded-2xl border border-border/70 bg-black shadow-elevated">
-              {hasScreenVideo ? (
+              {stageState === "video" ? (
                 <VideoStage videoRef={screenVideoRef} muted={isViewingOwnShare} />
-              ) : activeSessionId && sharer ? (
-                <ConnectingStage sharerName={sharer.displayName} />
+              ) : stageState === "connecting" ? (
+                <>
+                  {hasScreenVideoTrack && <VideoStage videoRef={screenVideoRef} muted={isViewingOwnShare} hidden />}
+                  <ConnectingStage sharerName={sharer?.displayName || "Host"} />
+                </>
               ) : (
                 <EmptyStage canShare={isHost} onShare={onShare} />
               )}
               {hasRemoteAudioOnly && <audio ref={remoteAudioRef} autoPlay playsInline />}
+              {playbackBlocked && !isViewingOwnShare && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="pointer-events-auto"
+                    onClick={() => {
+                      const media = screenVideoRef.current ?? remoteAudioRef.current;
+                      if (!media) return;
+                      void media.play()
+                        .then(() => setPlaybackBlocked(false))
+                        .catch((error) => {
+                          console.warn("Manual playback start failed.", error);
+                          toast.error("Browser blocked playback. Click the stage again to retry.");
+                        });
+                    }}
+                  >
+                    Resume playback
+                  </Button>
+                </div>
+              )}
 
               <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-2">
                 {sharer && (
@@ -413,11 +663,11 @@ export default function Room() {
                   <Button variant="destructive" onClick={onStopShare} data-testid="stop-sharing">
                     <StopCircle className="h-4 w-4" /> Stop sharing
                   </Button>
-                ) : (
+                ) : isHost ? (
                   <Button onClick={onShare} disabled={!isHost} className="bg-gradient-primary text-primary-foreground shadow-glow" data-testid="share-screen">
                     <MonitorUp className="h-4 w-4" /> Share screen
                   </Button>
-                )}
+                ) : null}
 
                 <div className="hidden items-center gap-2 rounded-full glass px-3 py-2 sm:flex">
                   <Volume2 className={cn("h-4 w-4", shouldDuck ? "text-primary" : "text-muted-foreground")} />
@@ -492,7 +742,7 @@ export default function Room() {
                 </SettingRow>
                 <SettingRow title="Connection" hint="Firestore handles signaling. WebRTC moves the live media directly.">
                   <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground capitalize">
-                    {activeSessionId && !hasScreenVideo ? "reconnecting" : connectionStatus}
+                    {displayConnectionStatus}
                   </div>
                 </SettingRow>
                 <Button variant="outline" className="w-full" onClick={onCopyInvite}>
@@ -561,7 +811,7 @@ export default function Room() {
                   </div>
                 </SettingRow>
 
-                {!hasScreenVideo && activeSessionId && (
+                {stageState === "connecting" && (
                   <div className="rounded-xl border border-border/70 bg-secondary/30 p-3 text-xs text-muted-foreground">
                     Reconnecting...
                   </div>
@@ -672,7 +922,15 @@ function ConnectingStage({ sharerName }: { sharerName: string }) {
   );
 }
 
-function VideoStage({ videoRef, muted }: { videoRef: React.RefObject<HTMLVideoElement>; muted?: boolean }) {
+function VideoStage({
+  videoRef,
+  muted,
+  hidden,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement>;
+  muted?: boolean;
+  hidden?: boolean;
+}) {
   return (
     <video
       ref={videoRef}
@@ -680,7 +938,7 @@ function VideoStage({ videoRef, muted }: { videoRef: React.RefObject<HTMLVideoEl
       playsInline
       muted={muted}
       controls
-      className="absolute inset-0 h-full w-full bg-black object-contain"
+      className={cn("absolute inset-0 h-full w-full bg-black object-contain", hidden && "opacity-0")}
     />
   );
 }

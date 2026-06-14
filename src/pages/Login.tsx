@@ -5,16 +5,17 @@ import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useAuthStore } from "@/store/auth";
 import { firebaseConfigError, isFirebaseConfigured } from "@/services/firebase";
-import { canUseQaTools, enableQaMode, qaTestUsers } from "@/lib/qa";
+import { canUseQaBypass, canUseQaTools, enableQaMode } from "@/lib/qa";
 import { toast } from "sonner";
 
 export default function Login() {
   const nav = useNavigate();
   const [params] = useSearchParams();
-  const { isAuthed, isLoading, loginWithGoogle, loginWithEmailPassword, error } = useAuthStore();
+  const { isAuthed, isLoading, loginWithGoogle, loginWithQaRole, error } = useAuthStore();
   const redirect = params.get("redirect") || "/home";
   const qaRequested = params.get("qa") === "1";
-  const showQaAuth = canUseQaTools();
+  const showQaBypass = canUseQaBypass();
+  const showQaToolsNote = canUseQaTools();
 
   useEffect(() => {
     if (isAuthed) nav(redirect, { replace: true });
@@ -38,14 +39,13 @@ export default function Login() {
     }
   };
 
-  const onQaLogin = async (email: string, password: string) => {
+  const onQaLogin = async (role: "host" | "guest") => {
     try {
-      enableQaMode();
-      await loginWithEmailPassword(email, password);
-      toast.success("Signed in for local QA");
+      await loginWithQaRole(role);
+      toast.success(`Signed in as test ${role}`);
       nav(redirect, { replace: true });
     } catch {
-      toast.error("QA sign-in failed");
+      toast.error("QA bypass sign-in failed");
     }
   };
 
@@ -79,10 +79,10 @@ export default function Login() {
             Continue with Google <ArrowRight className="h-4 w-4" />
           </Button>
 
-          {showQaAuth && (
+          {showQaBypass && (
             <div className="mt-4 rounded-xl border border-border/70 bg-background/30 p-4">
               <div className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                Local QA only
+                QA bypass
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 <Button
@@ -90,23 +90,29 @@ export default function Login() {
                   variant="outline"
                   disabled={isLoading}
                   data-testid="qa-login-host"
-                  onClick={() => onQaLogin(qaTestUsers.host.email, qaTestUsers.host.password)}
+                  onClick={() => onQaLogin("host")}
                 >
-                  QA host
+                  Test Host
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
                   disabled={isLoading}
                   data-testid="qa-login-guest"
-                  onClick={() => onQaLogin(qaTestUsers.guest.email, qaTestUsers.guest.password)}
+                  onClick={() => onQaLogin("guest")}
                 >
-                  QA guest
+                  Test Guest
                 </Button>
               </div>
               <p className="mt-3 text-xs text-muted-foreground">
-                Uses local env-provided QA users and fake media streams when QA mode is enabled.
+                Temporary QA-only bypass. Disabled unless the frontend and backend QA flags are both enabled.
               </p>
+            </div>
+          )}
+
+          {showQaToolsNote && !showQaBypass && (
+            <div className="mt-4 text-center text-xs text-muted-foreground">
+              QA media tools are available in dev mode when opened with <code>?qa=1</code>.
             </div>
           )}
 

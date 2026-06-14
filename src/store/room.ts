@@ -164,8 +164,15 @@ export const useRoomStore = create<RoomState>((set, get) => ({
 
   startSharing: async (userId, options) => {
     const roomId = get().room?.id;
+    const currentRole = get().currentRole;
     if (!roomId) return;
-    const { sessionId, micWarning } = await webrtcService.startHostSession(roomId, options);
+    if (currentRole !== "host") {
+      throw new Error("Only the host can start screen sharing.");
+    }
+    const { sessionId, micWarning } = await webrtcService.startHostSession(roomId, {
+      ...options,
+      actorRole: currentRole,
+    });
     set((s) => ({
       sharingUserId: userId,
       activeSessionId: sessionId,

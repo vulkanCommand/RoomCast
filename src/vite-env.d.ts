@@ -5,11 +5,9 @@ interface ImportMetaEnv {
   readonly VITE_TURN_URL?: string;
   readonly VITE_TURN_USERNAME?: string;
   readonly VITE_TURN_CREDENTIAL?: string;
+  readonly VITE_BASE_URL?: string;
+  readonly VITE_ENABLE_QA_BYPASS?: string;
   readonly VITE_ENABLE_QA_TOOLS?: string;
-  readonly VITE_QA_HOST_EMAIL?: string;
-  readonly VITE_QA_HOST_PASSWORD?: string;
-  readonly VITE_QA_GUEST_EMAIL?: string;
-  readonly VITE_QA_GUEST_PASSWORD?: string;
 }
 
 interface ImportMeta {

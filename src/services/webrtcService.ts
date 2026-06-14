@@ -69,6 +69,7 @@ let remoteStreamHandler: ((stream: MediaStream | null) => void) | null = null;
 let remoteSpeakingHandler: ((speaking: boolean) => void) | null = null;
 let sharingEndedHandler: (() => void) | null = null;
 let qaNativeStopHandler: (() => void) | null = null;
+let connectionStateHandler: ((state: RTCPeerConnectionState, iceState: RTCIceConnectionState) => void) | null = null;
 
 function publishDebugState() {
   if (!import.meta.env.DEV || typeof window === "undefined") return;
@@ -165,6 +166,7 @@ function cleanupPeerConnection(options: { preserveMic?: boolean; preserveScreen?
   peerConnection = null;
   dataChannel?.close();
   dataChannel = null;
+  connectionStateHandler?.("closed", "closed");
   if (!preserveScreen) stopScreenTracks();
   resetRemoteStream();
   if (!preserveMic) stopMicTracks();
@@ -205,8 +207,15 @@ function createPeerConnection() {
     remoteStreamHandler?.(snapshotStream(remoteStream));
     publishDebugState();
   };
-  peerConnection.onconnectionstatechange = () => publishDebugState();
-  peerConnection.oniceconnectionstatechange = () => publishDebugState();
+  peerConnection.onconnectionstatechange = () => {
+    publishDebugState();
+    connectionStateHandler?.(peerConnection?.connectionState || "new", peerConnection?.iceConnectionState || "new");
+  };
+  peerConnection.oniceconnectionstatechange = () => {
+    publishDebugState();
+    connectionStateHandler?.(peerConnection?.connectionState || "new", peerConnection?.iceConnectionState || "new");
+  };
+  connectionStateHandler?.(peerConnection.connectionState, peerConnection.iceConnectionState);
   return peerConnection;
 }
 
@@ -355,6 +364,16 @@ export function onSharingEnded(callback: () => void) {
   };
 }
 
+export function onConnectionStateChange(
+  callback: (state: RTCPeerConnectionState, iceState: RTCIceConnectionState) => void,
+) {
+  connectionStateHandler = callback;
+  callback(peerConnection?.connectionState || "new", peerConnection?.iceConnectionState || "new");
+  return () => {
+    if (connectionStateHandler === callback) connectionStateHandler = null;
+  };
+}
+
 export function getCurrentSessionId() {
   return currentSessionId;
 }
@@ -367,11 +386,28 @@ export function hasRemoteVideoTrack() {
   return Boolean(remoteStream?.getVideoTracks().some((track) => track.readyState === "live"));
 }
 
+export function getConnectionHealth() {
+  return {
+    connectionState: peerConnection?.connectionState || "new",
+    iceConnectionState: peerConnection?.iceConnectionState || "new",
+    hasRemoteVideoTrack: hasRemoteVideoTrack(),
+    hasLocalScreenShare: hasLocalScreenShare(),
+    currentSessionId,
+    currentRole,
+  } as const;
+}
+
 export async function ensureMicrophoneAccess() {
   await ensureMicrophone();
 }
 
-export async function startHostSession(roomId: string, options: SessionStartOptions = {}): Promise<SessionStartResult> {
+export async function startHostSession(
+  roomId: string,
+  options: SessionStartOptions & { actorRole?: Role } = {},
+): Promise<SessionStartResult> {
+  if (options.actorRole && options.actorRole !== "host") {
+    throw new Error("Only the host can start screen sharing.");
+  }
   const reuseScreen = Boolean(options.reuseScreen && hasLocalScreenShare());
   const hadMicBeforeAttempt = Boolean(localMicStream);
 

@@ -1,4 +1,4 @@
-﻿import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Home, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -6,8 +6,10 @@ import { useRoomStore } from "@/store/room";
 import { formatDuration } from "@/lib/roomcast";
 
 export default function Ended() {
+  const [params] = useSearchParams();
   const { room, participants, reset } = useRoomStore();
   const duration = room?.startedAt && room?.endedAt ? room.endedAt - room.startedAt : 0;
+  const isUnavailable = params.get("reason") === "unavailable";
 
   return (
     <main className="relative flex min-h-[calc(100vh-4rem)] items-center justify-center px-4 py-16">
@@ -18,8 +20,14 @@ export default function Ended() {
         <div className="mx-auto mb-6 flex justify-center">
           <BrandLogo size="md" />
         </div>
-        <h1 className="font-display text-4xl font-semibold tracking-tight">The room has ended</h1>
-        <p className="mt-2 text-muted-foreground">Thanks for watching together. Your room is now closed.</p>
+        <h1 className="font-display text-4xl font-semibold tracking-tight">
+          {isUnavailable ? "Room unavailable" : "The room has ended"}
+        </h1>
+        <p className="mt-2 text-muted-foreground">
+          {isUnavailable
+            ? "This room was not found or is no longer active."
+            : "Thanks for watching together. Your room is now closed."}
+        </p>
 
         <div className="mt-8 grid grid-cols-3 gap-3">
           <Stat label="Room" value={room?.name ?? "-"} />
@@ -52,4 +60,3 @@ function Stat({ label, value, mono }: { label: string; value: string; mono?: boo
     </div>
   );
 }
-

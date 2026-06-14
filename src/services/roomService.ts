@@ -16,6 +16,11 @@ export interface RoomSessionSnapshot {
   status: "starting" | "active" | "stopped";
 }
 
+type FirebaseCallableErrorLike = {
+  code?: string;
+  message?: string;
+};
+
 function toMillis(value: unknown): number {
   if (value && typeof value === "object" && "toMillis" in value && typeof value.toMillis === "function") {
     return value.toMillis();
@@ -98,6 +103,17 @@ export async function leaveRoom(roomId: string) {
 export async function requestReconnect(roomId: string, sessionId: string) {
   const fn = httpsCallable<{ roomId: string; sessionId: string }, { ok: boolean }>(getFunctionsInstance(), "requestReconnect");
   return (await fn({ roomId, sessionId })).data;
+}
+
+export function describeRoomError(error: unknown) {
+  const normalized = error as FirebaseCallableErrorLike | undefined;
+  const code = normalized?.code || "";
+  const message = normalized?.message || "Could not join that room.";
+
+  if (code.includes("resource-exhausted")) return "This room already has a guest.";
+  if (code.includes("failed-precondition")) return message;
+  if (code.includes("not-found")) return "Room ended or not found.";
+  return message;
 }
 
 export function subscribeToRoom(roomId: string, callback: (room: RoomSnapshot | null) => void) {

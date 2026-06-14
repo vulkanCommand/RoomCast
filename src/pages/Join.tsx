@@ -4,6 +4,7 @@ import { ArrowRight, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/store/auth";
 import { useRoomStore } from "@/store/room";
+import { describeRoomError } from "@/services/roomService";
 import { toast } from "sonner";
 
 export default function Join() {
@@ -45,8 +46,8 @@ export default function Join() {
       if (!room) return;
       toast.success(`Joining ${room.name}`);
       nav(`/room/${room.id}`);
-    } catch {
-      toast.error("Could not join that room.");
+    } catch (error) {
+      toast.error(describeRoomError(error));
     }
   };
 

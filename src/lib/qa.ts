@@ -1,22 +1,40 @@
 export const QA_MODE_STORAGE_KEY = "roomcast.qaMode";
 
-export const qaTestUsers = {
+export const qaBypassUsers = {
   host: {
-    email: import.meta.env.VITE_QA_HOST_EMAIL?.trim() || "",
-    password: import.meta.env.VITE_QA_HOST_PASSWORD?.trim() || "",
+    uid: "4GsKVrhVBaakDpWkX0cgY5lfUxM2",
+    email: "qa-host-roomcast@example.com",
+    displayName: "qa-host-roomcast",
   },
   guest: {
-    email: import.meta.env.VITE_QA_GUEST_EMAIL?.trim() || "",
-    password: import.meta.env.VITE_QA_GUEST_PASSWORD?.trim() || "",
+    uid: "xG0clBJrhNhpZQC7vMWyev1yCen2",
+    email: "qa-guest-roomcast@example.com",
+    displayName: "qa-guest-roomcast",
   },
 } as const;
 
-export function canUseQaTools() {
-  return (
-    import.meta.env.DEV &&
-    import.meta.env.VITE_ENABLE_QA_TOOLS === "true" &&
-    Boolean(qaTestUsers.host.email && qaTestUsers.host.password && qaTestUsers.guest.email && qaTestUsers.guest.password)
-  );
+export type QaBypassRole = keyof typeof qaBypassUsers;
+
+export function getQaBypassUserByUid(uid: string) {
+  return Object.values(qaBypassUsers).find((user) => user.uid === uid) ?? null;
+}
+
+export function getQaBypassUserByRole(role: QaBypassRole) {
+  return qaBypassUsers[role];
+}
+
+type QaEnv = {
+  DEV?: boolean;
+  VITE_ENABLE_QA_TOOLS?: string;
+  VITE_ENABLE_QA_BYPASS?: string;
+};
+
+export function canUseQaBypass(env: QaEnv = import.meta.env) {
+  return env.VITE_ENABLE_QA_BYPASS === "true";
+}
+
+export function canUseQaTools(env: QaEnv = import.meta.env) {
+  return Boolean(env.DEV && env.VITE_ENABLE_QA_TOOLS === "true");
 }
 
 export function enableQaMode() {

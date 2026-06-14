@@ -1,4 +1,5 @@
 import { initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
@@ -6,8 +7,22 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 initializeApp();
 
 const db = getFirestore();
+const adminAuth = getAuth();
 const ROOM_LIFETIME_MS = 1000 * 60 * 60 * 8;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const QA_BYPASS_ENABLED = process.env.QA_BYPASS_ENABLED === "true";
+const QA_BYPASS_USERS = {
+  host: {
+    uid: "4GsKVrhVBaakDpWkX0cgY5lfUxM2",
+    email: "qa-host-roomcast@example.com",
+    displayName: "qa-host-roomcast",
+  },
+  guest: {
+    uid: "xG0clBJrhNhpZQC7vMWyev1yCen2",
+    email: "qa-guest-roomcast@example.com",
+    displayName: "qa-guest-roomcast",
+  },
+} as const;
 
 function requireUid(uid?: string) {
   if (!uid) throw new HttpsError("unauthenticated", "Sign in to continue.");
@@ -25,13 +40,16 @@ function makeRoomCode() {
 function authProfile(request: { auth?: { uid?: string; token?: Record<string, unknown> } }) {
   const uid = request.auth?.uid;
   const token = request.auth?.token;
+  const qaRole = token?.qaRole;
+  const qaUser = (qaRole === "host" || qaRole === "guest") ? QA_BYPASS_USERS[qaRole] : null;
   const displayName =
+    qaUser?.displayName ||
     (typeof token?.name === "string" && token.name.trim()) ||
     (typeof token?.email === "string" && token.email.split("@")[0]) ||
     "RoomCast Guest";
   return {
     displayName,
-    email: typeof token?.email === "string" ? token.email : null,
+    email: qaUser?.email || (typeof token?.email === "string" ? token.email : null),
     photoURL: typeof token?.picture === "string" ? token.picture : null,
     joinedAt: FieldValue.serverTimestamp(),
     role: uid ? "host" : "guest",
@@ -105,6 +123,29 @@ export const createRoom = onCall(async (request) => {
   });
 
   return { roomId: roomRef.id, roomCode };
+});
+
+export const getQaBypassToken = onCall(async (request) => {
+  if (!QA_BYPASS_ENABLED) {
+    throw new HttpsError("permission-denied", "QA bypass is disabled.");
+  }
+
+  const role = request.data?.role as "host" | "guest" | undefined;
+  if (role !== "host" && role !== "guest") {
+    throw new HttpsError("invalid-argument", "role must be either host or guest.");
+  }
+
+  const qaUser = QA_BYPASS_USERS[role];
+  await adminAuth.getUser(qaUser.uid).catch(() => {
+    throw new HttpsError("failed-precondition", `QA ${role} user is not provisioned in Firebase Auth.`);
+  });
+
+  const token = await adminAuth.createCustomToken(qaUser.uid, {
+    qaBypass: true,
+    qaRole: role,
+  });
+
+  return { token };
 });
 
 export const joinRoom = onCall(async (request) => {
