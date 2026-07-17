@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.ts";
 
 /* RoomCast — cinematic, premium dark design system. All colors HSL. */
 
@@ -93,15 +92,18 @@
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: hsl(var(--border));
   }
 
   html, body, #root {
-    @apply h-full;
+    height: 100%;
   }
 
   body {
-    @apply bg-background text-foreground antialiased;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "ss01", "cv11";
     background: var(--gradient-cinematic);
     background-attachment: fixed;
@@ -146,7 +148,13 @@
 
 @layer components {
   .btn-primary-glow {
-    @apply relative overflow-hidden rounded-xl px-6 py-3 font-medium text-primary-foreground transition-all;
+    position: relative;
+    overflow: hidden;
+    border-radius: 0.75rem;
+    padding: 0.75rem 1.5rem;
+    font-weight: 500;
+    color: hsl(var(--primary-foreground));
+    transition: all 150ms ease;
     background: var(--gradient-primary);
     box-shadow: 0 10px 30px -10px hsl(var(--primary) / 0.6);
   }
